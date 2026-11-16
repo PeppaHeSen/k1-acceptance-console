@@ -27,7 +27,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.12.7"
+WORKER_VERSION = "0.12.8"
 CASE_PLAN_SCHEMA = {
     "type": "object", "required": ["summary", "items"], "additionalProperties": False,
     "properties": {
@@ -150,7 +150,7 @@ TOOLS = {
                 {"canvas": {"type": "string"}, "widget": {"type": "string"}, "offset": {"type": "integer"}}, []),
     "click": ("点击 observe 返回的有效控件 ID。UI 更新后重新 observe。",
               {"id": {"type": "integer"}}, ["id"]),
-    "sample_hero_animation": ("在 Unity 临时预览场景中采样塔防英雄 Prefab 的默认动画，检查真实动画绑定和骨骼变化。仅用于资源预览用例。",
+    "sample_hero_animation": ("用 Unity 导入的塔防英雄 Prefab 和 Spine 动画数据采样实际骨骼姿态。仅用于资源预览用例。",
                               {"hero": {"type": "integer"}}, ["hero"]),
     "case_progress": ("开始指定用例或提交基于实际观察的结论。通过和未通过会保存截图。",
                       {"item": {"type": "string"}, "case": {"type": "string"},
@@ -228,30 +228,25 @@ SAMPLE_HERO = r'''
 var path = "Assets/k1/K1D1/Res/Models/Hero/Hero__HERO__/TowerHero__HERO__.prefab";
 var prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.GameObject>(path);
 if (prefab == null) return new { path, issue = "塔防英雄模型未加载" };
-var scene = UnityEditor.SceneManagement.EditorSceneManager.NewPreviewScene();
-try {
-    var root = new UnityEngine.GameObject("AcceptanceAnimationPreview");
-    root.SetActive(false);
-    UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(root, scene);
-    var model = UnityEngine.Object.Instantiate(prefab, root.transform, false);
-    var player = model.GetComponentInChildren<UnityEngine.Animation>(true);
-    if (player == null || player.clip == null)
-        return new { path, issue = "模型没有默认 Legacy 动画" };
-    var clip = player.clip;
-    var bindings = UnityEditor.AnimationUtility.GetCurveBindings(clip)
-        .Where(b => b.type == typeof(UnityEngine.Transform)).Select(b => b.path).Distinct().ToArray();
-    var nodes = bindings.Select(p => p.Length == 0 ? player.transform : player.transform.Find(p)).ToArray();
-    var valid = nodes.Where(t => t != null).ToArray();
-    clip.SampleAnimation(player.gameObject, clip.length * .2f);
-    var first = valid.Select(t => new { p = t.localPosition, r = t.localRotation, s = t.localScale }).ToArray();
-    clip.SampleAnimation(player.gameObject, clip.length * .65f);
-    var changed = valid.Where((t, i) => t.localPosition != first[i].p || t.localRotation != first[i].r ||
-        t.localScale != first[i].s).Count();
-    return new { path, clip = clip.name, seconds = clip.length, bindings = bindings.Length,
-        unresolved = bindings.Where((p, i) => nodes[i] == null).Take(12).ToArray(), changingTransforms = changed };
-} finally {
-    UnityEditor.SceneManagement.EditorSceneManager.ClosePreviewScene(scene);
-}
+var rig = prefab.GetComponentsInChildren<Spine.Unity.SkeletonAnimation>(true).FirstOrDefault();
+var data = rig?.skeletonDataAsset?.GetSkeletonData(true);
+if (data == null) return new { path, issue = "英雄骨骼资源未加载" };
+var clip = data.FindAnimation(rig.AnimationName);
+if (clip == null || clip.Duration <= 0)
+    return new { path, rig = rig.name, configuredClip = rig.AnimationName, issue = "英雄骨骼默认剪辑缺失" };
+var skeleton = new Spine.Skeleton(data);
+var animation = new Spine.AnimationState(new Spine.AnimationStateData(data));
+animation.SetAnimation(0, clip, false);
+animation.Update(clip.Duration * .2f);
+animation.Apply(skeleton);
+var bones = skeleton.Bones;
+var first = bones.Select(b => new { b.X, b.Y, b.Rotation, b.ScaleX, b.ScaleY }).ToArray();
+animation.Update(clip.Duration * .45f);
+animation.Apply(skeleton);
+var changed = bones.Where((b, i) => b.X != first[i].X || b.Y != first[i].Y || b.Rotation != first[i].Rotation ||
+    b.ScaleX != first[i].ScaleX || b.ScaleY != first[i].ScaleY).Select(b => b.Data.Name).ToArray();
+return new { path, rig = rig.name, asset = rig.skeletonDataAsset.name, clip = clip.Name, seconds = clip.Duration,
+    bones = bones.Count, changingBones = changed.Length, examples = changed.Take(12).ToArray() };
 '''
 
 
