@@ -11,7 +11,13 @@
   <header>
     <div class="top">
       <div class="brand"><span class="mark">K1</span> 验收台</div>
-      <div class="header-actions"><span id="online" class="worker"></span><a href="#setup">节点配置</a></div>
+      <div class="header-actions">
+        <span id="online" class="worker"></span>
+        <a href="#setup">节点配置</a>
+        <form id="operatorSession" method="post" action="/logout" hidden>
+          <button id="switchOperator" type="submit" class="secondary" title="切换操作员"></button>
+        </form>
+      </div>
     </div>
   </header>
   <main>

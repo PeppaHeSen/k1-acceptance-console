@@ -10,7 +10,7 @@ K1 验收台包含配置向导、版本日验收、分支验收、节点管理�
 
 1. 在部署账号下安装 Python 3.9 或以上、Git、DWS 和 Claude Code。先用该账号分别确认 DWS 可以读进包表、Claude Code 可以运行。节点还需要对应的 Unity 或真机环境。
 2. 选择部署主机上可写的运行目录。Mac 节点初始配置可用 `python3 provision.py --directory <运行目录> --node-root <三端工程根目录> --unity-editor <Unity可执行文件绝对路径>`。运行目录包含数据库、节点令牌、操作员口令和节点持久化数据，和代码分开放置。
-3. 在仓库根目录运行 `python3 server.py --config <运行目录>/server.json` 和 `python3 worker.py --config <运行目录>/node.json`。默认监听 `127.0.0.1:8082`，通过受保护的 SSH 转发或已有 HTTPS 入口访问。网页登录使用 `server.json` 中生成的操作员和口令。节点平台为 Windows 时，从网页登记节点，再用颁发的节点标识和令牌复制一份节点配置，并改成本机路径及服务地址。
+3. 在仓库根目录运行 `python3 server.py --config <运行目录>/server.json` 和 `python3 worker.py --config <运行目录>/node.json`。后端默认监听 `127.0.0.1:8082`，HTTPS 网页的启动方法见部署说明。网页只填写操作员名称，首次自动登记。通过 SSH 直接访问本机后端时，使用 `server.json` 中的凭据。Windows 节点在网页登记后，用颁发的节点标识和令牌创建本机配置。
 4. 三端工程根目录下应有 `K1Client/k1_client`、`K1Game/game` 和 `K1Dataconfig/dataconfig`。节点在缺少技能仓库时从配置的来源克隆，保存配置后可在网页查看检查结果。
 
 SSH 转发示例。

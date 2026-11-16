@@ -8,16 +8,17 @@
 
 1. 检出仓库，确认当前提交。自定义硬盘先核对挂载点和可写性。把运行目录放在代码目录之外，升级时复用已有数据库和配置。
 2. 检查 Python 3.9+、Git 和 DWS。用运行网页服务的账号实测 `dws sheet list --node <进包文档地址> --format json`。如果 Mac 的 DWS 登录态保存在钥匙串，从能读表的 Mac 登录终端启动服务。
-3. 首次运行 `python3 provision.py --directory <运行目录>`。配置文件会生成网页登录凭据。主机也承担验收时，可以加 `--node-root <本机根目录> --unity-editor <Unity可执行文件>` 来登记同机 Mac 节点。Windows 上可使用 `py -3` 代替 `python3`。
+3. 首次运行 `python3 provision.py --directory <运行目录>`。配置文件会生成供 HTTPS 入口连接本机后端的凭据。主机也承担验收时，可以加 `--node-root <本机根目录> --unity-editor <Unity可执行文件>` 来登记同机 Mac 节点。Windows 上可使用 `py -3` 代替 `python3`。
 4. 启动后端 `python3 server.py --config <运行目录>/server.json`。后端监听 `127.0.0.1:8082`。如已配置同机节点，再启动 `python3 worker.py --config <运行目录>/node.json`。
 5. 使用已签发的内网证书时，将证书链和私钥路径传给 HTTPS 入口。主机 IP 需包含在证书的 SAN 中。没有现成证书时，可以加 `--generate-cert`，为指定 IP 生成单主机证书。这种情况下，访问者需要通过可信渠道确认并信任该证书。
 
 ```bash
 python3 lan.py --bind <主机内网IP> --port 8443 --upstream-port 8082 \
+  --server-config <运行目录>/server.json \
   --cert <运行目录>/https/console.pem --key <运行目录>/https/console.key
 ```
 
-部署记录应包含实际 URL、运行目录、进程启动方式和日志位置。HTTPS 入口继续使用后端的网页登录账号。浏览器和异机节点都访问同一个 HTTPS 地址。给访问者分发公用证书，私钥保存在主服务器。
+部署记录应包含实际 URL、运行目录、进程启动方式和日志位置。HTTPS 网页只填写操作员名称，首次使用时自动登记到运行目录的 `operators.sqlite3`，并建立浏览器会话。名称用于显示，供可信内网使用。浏览器和异机节点都访问同一个 HTTPS 地址。给访问者分发公用证书，私钥保存在主服务器。
 
 ## 部署并登记执行节点
 
@@ -36,6 +37,6 @@ python3 worker.py --config <节点运行目录>/node.json
 
 ## 交付前核对
 
-- 从另一台内网机器直接打开主服务器 HTTPS 地址。未登录时收到登录提示，登录后能进入验收台和刷新进包页签。
+- 从另一台内网机器直接打开主服务器 HTTPS 地址。输入操作员名称后进入验收台并刷新页签，再使用同名进入，确认沿用原登记。
 - 在主服务器确认新节点在线、平台匹配和依赖检查结果。提交一条授权范围内的联调批次，检查节点接单、详情进度和 AI 输出。
 - 核对重启方式、配置与证书文件位置。macOS 上如需在重启后自动启动，应按实际用户会话配置进程管理，并检查外接盘和钥匙串可用后才启动服务。

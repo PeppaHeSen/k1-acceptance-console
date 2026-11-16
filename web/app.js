@@ -244,3 +244,9 @@ action(byId("closeReview"),async () => {
 renderRoute();
 refreshState();
 setInterval(refreshState,3000);
+fetch("/operator").then(response => response.ok ? response.json() : {}).then(({name}) => {
+  if (name) {
+    set("switchOperator",name + " · 切换");
+    byId("operatorSession").hidden = false;
+  }
+}).catch(() => {});

@@ -2,19 +2,23 @@
 
 import argparse
 import base64
+from contextlib import closing
 from http.client import HTTPConnection, HTTPException
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
+import json
 import os
 from pathlib import Path
 import secrets
 import ssl
+import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
-from time import monotonic
+from time import monotonic, time
+from unicodedata import category, normalize
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -38,9 +42,27 @@ p{color:#a43238}
 </style>
 <main><section><h1>登录 K1 验收台</h1>{message}
 <form method="post" action="/login">
-<label for="operator">操作员</label><input id="operator" name="operator" autocomplete="username" required>
-<label for="password">登录密码</label><input id="password" name="password" type="password" autocomplete="current-password" required>
-<button type="submit">登录</button></form></section></main></html>"""
+<label for="operator">操作员</label><input id="operator" name="operator" autocomplete="username" maxlength="50" required>
+<button type="submit">进入验收台</button></form></section></main></html>"""
+
+
+class Operators:
+    def __init__(self, path):
+        self.path = path
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("""CREATE TABLE IF NOT EXISTS operators (
+                identity TEXT PRIMARY KEY, name TEXT NOT NULL,
+                created REAL NOT NULL, last_seen REAL NOT NULL
+            )""")
+
+    def find_or_create(self, name):
+        now = time()
+        identity = name.casefold()
+        with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
+            db.execute("""INSERT INTO operators VALUES (?, ?, ?, ?)
+                ON CONFLICT(identity) DO UPDATE SET last_seen=excluded.last_seen""",
+                       (identity, name, now, now))
+            return db.execute("SELECT name FROM operators WHERE identity=?", (identity,)).fetchone()[0]
 
 
 class TlsServer(ThreadingHTTPServer):
@@ -63,15 +85,20 @@ class TlsServer(ThreadingHTTPServer):
             record = self.sessions.get(token)
             return record[1] if record and record[0] > monotonic() else None
 
-    def login(self, credential):
+    def login(self, name):
+        operator = self.operators.find_or_create(name)
         now = monotonic()
         with self.session_lock:
             self.sessions = {key: item for key, item in self.sessions.items() if item[0] > now}
             if len(self.sessions) >= 512:
                 self.sessions.pop(next(iter(self.sessions)))
             token = secrets.token_urlsafe(32)
-            self.sessions[token] = (now + SESSION_LIFETIME, credential)
+            self.sessions[token] = (now + SESSION_LIFETIME, operator)
         return token
+
+    def logout(self, token):
+        with self.session_lock:
+            self.sessions.pop(token, None)
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], OSError):
@@ -80,26 +107,49 @@ class TlsServer(ThreadingHTTPServer):
 
 class Gateway(BaseHTTPRequestHandler):
     def do_GET(self):
+        path = urlsplit(self.path).path
+        if path == "/operator":
+            self.current_operator()
+            return
         credential = self.operator_credential()
-        if urlsplit(self.path).path == "/" and not credential:
+        if path == "/" and not credential:
             self.login_page()
         else:
             self.forward(credential)
 
     def do_POST(self):
-        if urlsplit(self.path).path == "/login":
+        path = urlsplit(self.path).path
+        if path == "/login":
             self.login()
+        elif path == "/logout":
+            self.server.logout(self.session_token())
+            self.redirect_session("", 0)
         else:
             self.forward(self.operator_credential())
 
     def operator_credential(self):
         if credential := self.headers.get("Authorization"):
             return credential
+        if not urlsplit(self.path).path.startswith("/api/agent/") and self.server.session(self.session_token()):
+            return self.server.service_credential
+        return None
+
+    def session_token(self):
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", "")).get(COOKIE)
         except CookieError:
             return None
-        return self.server.session(cookie.value) if cookie else None
+        return cookie.value if cookie else None
+
+    def current_operator(self):
+        name = self.server.session(self.session_token())
+        body = json.dumps({"name": name}, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def login_page(self, status=200, message=""):
         body = LOGIN_HTML.replace("{message}", f'<p role="alert">{message}</p>' if message else "").encode()
@@ -117,17 +167,16 @@ class Gateway(BaseHTTPRequestHandler):
             if (not 0 < length <= 4096 or self.headers.get("Transfer-Encoding")
                     or self.headers.get_content_type() != "application/x-www-form-urlencoded"):
                 raise ValueError()
-            fields = parse_qs(self.rfile.read(length).decode("utf-8"), max_num_fields=2)
-            operator, password = fields["operator"][0], fields["password"][0]
-            if ":" in operator:
+            fields = parse_qs(self.rfile.read(length).decode("utf-8"), max_num_fields=1)
+            operator = normalize("NFKC", fields["operator"][0]).strip()
+            if not 0 < len(operator) <= 50 or any(category(ch).startswith("C") for ch in operator):
                 raise ValueError()
         except (KeyError, ValueError, UnicodeError):
-            self.login_page(400, "请填写操作员和登录密码。")
+            self.login_page(400, "请输入 1 至 50 个字符的操作员名称。")
             return
-        credential = "Basic " + base64.b64encode(f"{operator}:{password}".encode()).decode()
         upstream = HTTPConnection("127.0.0.1", self.server.upstream_port, timeout=8)
         try:
-            upstream.request("GET", "/", headers={"Authorization": credential, "Connection": "close"})
+            upstream.request("GET", "/", headers={"Authorization": self.server.service_credential, "Connection": "close"})
             response = upstream.getresponse()
             status = response.status
             response.read()
@@ -136,15 +185,19 @@ class Gateway(BaseHTTPRequestHandler):
         finally:
             upstream.close()
         if status != 200:
-            if status == 401:
-                self.login_page(401, "操作员或密码错误。")
-            else:
-                self.login_page(502, "验收台服务暂不可用。")
+            self.login_page(502, "验收台服务暂不可用。")
             return
-        token = self.server.login(credential)
+        try:
+            token = self.server.login(operator)
+        except sqlite3.Error:
+            self.login_page(503, "操作员登记暂不可用。")
+            return
+        self.redirect_session(token, SESSION_LIFETIME)
+
+    def redirect_session(self, token, max_age):
         self.send_response(303)
         self.send_header("Location", "/")
-        self.send_header("Set-Cookie", f"{COOKIE}={token}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_LIFETIME}")
+        self.send_header("Set-Cookie", f"{COOKIE}={token}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -241,8 +294,12 @@ def main():
     parser.add_argument("--upstream-port", type=int, default=8082)
     parser.add_argument("--cert", required=True, help="PEM certificate chain")
     parser.add_argument("--key", required=True, help="PEM private key")
+    parser.add_argument("--server-config", required=True, type=Path, help="Private loopback server configuration")
     parser.add_argument("--generate-cert", action="store_true", help="Create a certificate pinned to the supplied LAN IP")
     args = parser.parse_args()
+    config = json.loads(args.server_config.read_text(encoding="utf-8"))
+    service_credential = base64.b64encode(f"{config['operator']}:{config['password']}".encode()).decode()
+    operators = Operators(args.server_config.with_name("operators.sqlite3"))
     if args.generate_cert:
         create_certificate(args.bind, Path(args.cert), Path(args.key))
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -250,6 +307,8 @@ def main():
     tls.load_cert_chain(args.cert, args.key)
     with TlsServer((args.bind, args.port), Gateway) as gateway:
         gateway.upstream_port = args.upstream_port
+        gateway.service_credential = "Basic " + service_credential
+        gateway.operators = operators
         gateway.tls = tls
         print(f"K1 HTTPS entry listening on https://{args.bind}:{args.port}/", flush=True)
         gateway.serve_forever()
