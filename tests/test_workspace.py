@@ -61,6 +61,10 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             skill = base / "skill"
             (skill / "review-k1-function").mkdir(parents=True)
             (skill / "review-k1-function" / "SKILL.md").write_text("read this verified skill")
+            generator = skill / "slg-testcase-generator"
+            (generator / "references").mkdir(parents=True)
+            (generator / "SKILL.md").write_text("read this verified testcase skill")
+            (generator / "references" / "static_acceptance.md").write_text("read these K1 testcase rules")
             run = base / "run"
             run.mkdir()
             node = Node.__new__(Node)
@@ -89,5 +93,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             with patch("worker.command", return_value=Mock(stdout="new portrait")), patch("worker.subprocess.Popen", launch):
                 self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base), 0)
             self.assertIn("read this verified skill", node.run_claude.call_args.args[0])
+            self.assertIn("read this verified testcase skill", node.run_claude.call_args.args[0])
+            self.assertIn("read these K1 testcase rules", node.run_claude.call_args.args[0])
             snapshots = [call.kwargs["cases"] for call in node.event.call_args_list if call.args == ("case_snapshot",)]
             self.assertEqual(snapshots, [[{"id": "TC-01", "title": "检查半身像", "state": "pending", "evidence": ""}]])

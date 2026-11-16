@@ -43,7 +43,9 @@ python3 worker.py --config <节点运行目录>/node.json
 
 把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
 
-Worker 接单后读取经核对的 K1FunctionReview 技能版本和目标客户端提交，启动 Claude Code 准备用例。用例初始状态为「待执行」，Claude 的输出、用例生成状态和后续实测进度都会回传网页。若资料不足或 AI 暂不可用，节点会在记录中说明，并启动 Unity 供验收人员或 Agent 补齐用例和实测。
+Worker 接单后从同一个 K1FunctionReview 提交读取 `review-k1-function`、`slg-testcase-generator` 和 K1 本地用例规则，结合目标客户端提交启动 Claude Code 准备用例。用例初始状态为「待执行」，Claude 输出和用例进度会回传网页。分支和版本日共用这套用例生成流程。
+
+Unity 编辑器启动后，由连接到该节点的验收人员或 Agent 进入 Play、核对实际登录角色和测试服并执行用例。编辑器日志出现说明进程已启动，网页会显示等待实测接手。资料不足或用例技能不可用时，详情页会显示缺口，可在交接目录补齐用例。
 
 用例按 `runtime.json` 的 `cases_file` 路径原子写入。单事项可写用例数组。多事项用对象保存，键取 `runtime.json` 中每个事项的 `key`，值为各自的用例数组。每个用例填写稳定的 `id`、`title`、`state` 和可选的 `evidence`，状态支持 `pending`、`running`、`pass`、`fail`、`blocked`、`confirm`。每完成一条用例就更新该文件，Worker 会把进度同步到网页。
 
