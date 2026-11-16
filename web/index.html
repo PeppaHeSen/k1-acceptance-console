@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>K1 验收台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="top">
+      <div class="brand"><span class="mark">K1</span> 验收台</div>
+      <div class="header-actions"><span id="online" class="worker"></span><a href="#setup">节点配置</a></div>
+    </div>
+  </header>
+  <main>
+    <p id="notice" class="field-note" role="status" hidden></p>
+    <section id="dashboard" hidden>
+      <div class="intro"><div><h1>K1 验收</h1><p>提交版本日或功能分支验收，查看队列与执行进度。</p></div><span class="demo">链路联调</span></div>
+      <div class="layout">
+        <form id="submitForm" class="card config">
+          <h2>验收配置</h2>
+          <fieldset class="mode-select">
+            <legend class="legend">验收模式</legend>
+            <div class="seg">
+              <label><input type="radio" name="mode" value="version" checked>版本日验收</label>
+              <label><input type="radio" name="mode" value="branch">分支验收</label>
+            </div>
+          </fieldset>
+          <fieldset id="versionFields">
+            <div class="field">
+              <div class="field-title"><label for="sheet">进包表页签</label><button id="refresh" class="secondary" type="button">刷新页签</button></div>
+              <select id="sheet" name="sheet" required></select><p id="sheetTime" class="field-note"></p>
+            </div>
+            <div class="field"><label for="releaseBranch">目标分支</label><select id="releaseBranch" name="branch"><option>dev</option><option>qa</option></select></div>
+          </fieldset>
+          <fieldset id="branchFields" hidden disabled>
+            <div class="field"><label for="featureBranch">目标功能分支</label><input id="featureBranch" name="branch" type="text" required maxlength="180" placeholder="dev_NK-12345"></div>
+            <div class="field"><label for="source">Jira 单号或需求链接</label><input id="source" name="source" type="text" required maxlength="250"></div>
+            <details class="node-add">
+              <summary>单独设置三端分支</summary>
+              <div class="field"><label for="clientBranch">客户端</label><input id="clientBranch" name="client_branch" type="text"></div>
+              <div class="field"><label for="gameBranch">服务端</label><input id="gameBranch" name="game_branch" type="text"></div>
+              <div class="field"><label for="dataBranch">配表</label><input id="dataBranch" name="data_branch" type="text"></div>
+            </details>
+          </fieldset>
+          <div class="pair field">
+            <div><label for="method">测试方式</label><select id="method" name="method"><option>Unity</option><option>真机</option></select></div>
+            <div><label for="platform">节点平台</label><select id="platform" name="os"><option value="">不限</option><option>macOS</option><option>Windows</option></select></div>
+          </div>
+          <div class="field"><label for="node">执行节点</label><select id="node" name="node"></select></div>
+          <div class="field"><label for="server">测试服 ID（选填）</label><input id="server" name="server" type="text"></div>
+          <div class="field"><label for="notes">验收要求（选填）</label><textarea id="notes" name="notes" maxlength="4000"></textarea></div>
+          <div class="preview"><p>当前为只读链路联调。自动部署、配置转换和进包表回写均关闭。</p></div>
+          <button class="primary" type="submit">提交验收批次</button>
+        </form>
+        <div>
+          <section class="card job-card"><div class="title-line"><h2>运行队列</h2><span id="counts" class="sub"></span></div><div id="queue" class="job-list"></div></section>
+          <section class="card nodes"><div class="title-line"><h2>执行节点</h2><a href="#setup" class="setting-link">管理配置</a></div><ul id="nodes" class="node-list"></ul></section>
+        </div>
+      </div>
+    </section>
+    <section id="setup" class="detail-view" hidden>
+      <a class="back" href="#dashboard">← 返回验收台</a>
+      <div class="intro"><div><h1>配置向导</h1><p>为执行节点指定本机三端工程目录，并查看依赖检查。</p></div></div>
+      <div class="wizard-layout">
+        <div class="card wizard-panel">
+          <h2>节点与工程目录</h2>
+          <form id="setupForm">
+            <div class="field"><label for="setupNode">执行节点</label><select id="setupNode" required></select></div>
+            <div class="field"><label for="root">三端工程根目录</label><input id="root" type="text" required placeholder="输入节点本机的绝对路径"></div>
+            <div class="wizard-actions"><button type="submit" class="primary">保存并检查</button></div>
+          </form>
+          <details class="node-add">
+            <summary>登记执行节点</summary>
+            <form id="register">
+              <div><label for="nodeName">节点名称</label><input id="nodeName" name="name" type="text" required maxlength="60"></div>
+              <div><label for="nodeOs">操作系统</label><select id="nodeOs" name="os"><option>macOS</option><option>Windows</option></select></div>
+              <button type="submit" class="secondary">登记节点</button>
+            </form>
+            <pre id="enroll" aria-live="polite" style="overflow:auto"></pre>
+          </details>
+        </div>
+        <section class="card wizard-panel"><h2>启动检查</h2><ul id="checks" class="dependency-list"></ul></section>
+      </div>
+    </section>
+    <section id="detail" class="detail-view" hidden>
+      <a class="back" href="#dashboard">← 返回运行队列</a>
+      <div class="intro"><div><h1 id="detailTitle">验收批次</h1><p id="context"></p></div><span id="state" class="pill"></span></div>
+      <section class="card run">
+        <h2>运行进度</h2><p class="sub" id="stage"></p>
+        <div class="field"><progress id="progress" value="0" max="1"></progress><p id="summary" class="sub"></p></div>
+        <form id="closeReview" class="field" hidden>
+          <label for="closeReason">待核对批次的结束原因</label>
+          <input id="closeReason" type="text" required maxlength="500">
+          <button type="submit" class="secondary">确认结束</button>
+        </form>
+      </section>
+      <details class="card log"><summary>AI 输出与执行记录</summary><div id="logEntries" role="log" tabindex="0"></div></details>
+      <section class="card list">
+        <div class="list-head"><h2>验收清单</h2></div>
+        <div class="table-wrap"><table><thead><tr><th>事项</th><th>结果</th><th>证据</th></tr></thead><tbody id="items"></tbody></table></div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
