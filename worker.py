@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import ssl
 import sqlite3
 import subprocess
 import threading
@@ -48,6 +49,9 @@ class Node:
         self.checks = []
         self.caps = []
         self.claude = config.get("claude") or shutil.which("claude")
+        self.tls = ssl.create_default_context()
+        if config.get("ca_cert"):
+            self.tls.load_verify_locations(cafile=config["ca_cert"])
         self.attempt = json.loads(self.ledger.read_text(encoding="utf-8")) if self.ledger.exists() else None
         self.stop = threading.Event()
 
@@ -57,7 +61,7 @@ class Node:
                               "Content-Type": "application/json", "X-Node-ID": self.config["id"],
                               "Authorization": "Bearer " + self.config["token"],
                           })
-        with urlopen(request, timeout=12) as response:
+        with urlopen(request, timeout=12, context=self.tls) as response:
             return json.load(response)
 
     def check_skill(self):
