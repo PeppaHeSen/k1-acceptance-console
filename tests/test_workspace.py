@@ -1,13 +1,31 @@
 from contextlib import nullcontext
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
-from worker import Node, acceptance_checkout, command
+from worker import Node, UnityTools, acceptance_checkout, command, save_json
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_auto_result_blocks_unexecuted_cases(self):
+        with TemporaryDirectory() as temp:
+            run = Path(temp)
+            manifest = {"server": "2903", "client": "a" * 40, "items": [{"key": "NK-1"}],
+                        "project": str(run), "test_player": 1}
+            save_json(run / "runtime.json", manifest)
+            save_json(run / "cases.json", {"NK-1": [{"id": "TC-1", "title": "观察画面", "state": "pending"}]})
+            tools = UnityTools(run / "runtime.json")
+            tools.record({"item": "NK-1", "case": "TC-1", "state": "running"})
+            with self.assertRaisesRegex(ValueError, "observe"):
+                tools.record({"item": "NK-1", "case": "TC-1", "state": "pass", "observation": "猜测"})
+            Node.finish_auto_cases(manifest, run, "没有得到实测证据。")
+            cases = json.loads((run / "cases.json").read_text(encoding="utf-8"))
+            report = json.loads((run / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(cases["NK-1"][0]["state"], "blocked")
+            self.assertEqual(report["items"]["NK-1"]["result"], "blocked")
+
     def test_runtime_error_restores_original_branch_and_discards_tracked_edits(self):
         with TemporaryDirectory() as temp:
             base = Path(temp)

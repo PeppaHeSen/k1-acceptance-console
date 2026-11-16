@@ -482,6 +482,8 @@ class Console:
             config["sheet_name"] = sheet["name"]
             config["document"] = self.workbook.document
             items = self.workbook.entries(config["sheet"])
+            if config["source"]:
+                items = [item for item in items if item["key"] == config["source"].upper()]
             config["refs"] = {key: config["branch"] for key in ("client", "game", "data")}
         elif config["mode"] == "branch":
             if not config["source"]:
