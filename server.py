@@ -8,12 +8,15 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import IPv4Address, IPv4Network
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import subprocess
 import time
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from k1_sheet import SheetError, Workbook
@@ -29,7 +32,7 @@ APPEARANCE_ASSETS = {
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
 EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "case_snapshot",
-          "execution_finished", "execution_error"}
+          "execution_finished", "execution_error", "execution_stopped"}
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
@@ -56,6 +59,16 @@ def bounded(data, key, limit=250):
     if not isinstance(value, str) or len(value) > limit:
         raise ApiError(400, f"{key} 格式无效。")
     return value.strip()
+
+
+def valid_branch(ref):
+    return (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,179}", ref)
+            and ".." not in ref and "//" not in ref and not ref.endswith(("/", ".", ".lock")))
+
+
+class JiraNoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 class Console:
@@ -107,6 +120,11 @@ class Console:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {field} REAL")
             if "operator" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN operator TEXT")
+            if "stop_requested" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN stop_requested REAL")
+            node_columns = {row["name"] for row in db.execute("PRAGMA table_info(nodes)")}
+            if "stop_supported" not in node_columns:
+                db.execute("ALTER TABLE nodes ADD COLUMN stop_supported INTEGER NOT NULL DEFAULT 0")
             db.execute("""UPDATE jobs SET started=(SELECT MIN(created) FROM events WHERE job=jobs.id)
                           WHERE started IS NULL AND node IS NOT NULL""")
             db.execute("""UPDATE jobs SET ended=(SELECT MAX(created) FROM events WHERE job=jobs.id)
@@ -198,12 +216,13 @@ class Console:
     def node(row):
         return {key: row[key] for key in ("id", "name", "os", "root", "seen")} | {
             "checks": json.loads(row["checks"]), "capabilities": json.loads(row["capabilities"]),
+            "stop_supported": bool(row["stop_supported"]),
         }
 
     @staticmethod
     def job(row):
         return {key: row[key] for key in ("id", "created", "assigned", "node", "attempt", "state", "stage",
-                                         "started", "ended", "operator")} | {
+                                         "started", "ended", "operator", "stop_requested")} | {
             "config": json.loads(row["config"]), "items": json.loads(row["items"]),
         }
 
@@ -345,6 +364,90 @@ class Console:
             db.execute("UPDATE nodes SET root=?, capabilities='[]', checks='[]' WHERE id=?", (root, node_id))
         return {"saved": True}
 
+    def branches(self, source):
+        try:
+            path = urlsplit(source).path if source.startswith(("https://", "http://")) else source
+        except ValueError as error:
+            raise ApiError(400, "请输入 Jira 单号或 Jira 工单链接。") from error
+        key = re.fullmatch(r"[A-Z][A-Z0-9]{1,15}-[0-9]{1,12}", path.rstrip("/").rsplit("/", 1)[-1].upper())
+        if not key:
+            raise ApiError(400, "请输入 Jira 单号或 Jira 工单链接。")
+        key = key.group()
+        repo = self.config.get("branch_lookup_repo")
+        if not repo:
+            raise ApiError(503, "主节点尚未配置分支查询，请手动填写分支。")
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=repo, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                                  timeout=5, check=True).stdout
+
+        links = self.jira_links(key)
+        try:
+            linked = self.linked_branches(links, git) if links else []
+            if linked:
+                return {"issue": key, "branches": sorted(linked), "basis": "jira"}
+            result = git("ls-remote", "--heads", "origin", f"*{key}*", f"*{key.lower()}*")
+        except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+            raise ApiError(502, "客户端分支查询失败，请重试或手动填写分支。") from error
+        token = re.compile(r"(?<![A-Z0-9])" + re.escape(key) + r"(?![A-Z0-9])", re.I)
+        matches = []
+        for line in result.splitlines():
+            ref = line.partition("\t")[2].removeprefix("refs/heads/")
+            if valid_branch(ref) and token.search(ref):
+                matches.append(ref)
+        return {"issue": key, "branches": sorted(set(matches), key=lambda ref: (ref != f"dev_{key}", ref)),
+                "basis": "name"}
+
+    def jira_links(self, key):
+        endpoint = self.config.get("jira_url", "").rstrip("/")
+        token_file = self.config.get("jira_token_file")
+        if not endpoint.startswith("https://") or not token_file:
+            return []
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+            request = Request(f"{endpoint}/rest/api/2/issue/{key}/remotelink",
+                              headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+            with build_opener(JiraNoRedirect()).open(request, timeout=2) as response:
+                links = json.loads(response.read(1024 * 1024))
+            return links if isinstance(links, list) else []
+        except (OSError, ValueError):
+            return []
+
+    @staticmethod
+    def linked_branches(links, git):
+        remote = git("remote", "get-url", "origin").strip()
+        origin = urlsplit(remote if "://" in remote else "ssh://" + remote.replace(":", "/", 1))
+        prefix = "/" + origin.path.strip("/").removesuffix(".git") + "/-/"
+        wanted = set()
+        commits = set()
+        for link in links:
+            if not isinstance(link, dict) or not isinstance(link.get("object"), dict):
+                continue
+            try:
+                url = urlsplit(link["object"].get("url") or "")
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if url.hostname != origin.hostname or not url.path.startswith(prefix):
+                continue
+            target = unquote(url.path[len(prefix):])
+            if match := re.fullmatch(r"merge_requests/(\d+)/?", target):
+                wanted.add(f"refs/merge-requests/{match[1]}/head")
+            if match := re.fullmatch(r"commit/([a-f0-9]{40})/?", target):
+                commits.add(match[1])
+            if target.startswith("tree/") and valid_branch(target[5:]):
+                wanted.add("refs/heads/" + target[5:])
+        if not wanted and not commits:
+            return []
+        refs = dict(line.split("\t", 1)[::-1] for line in git(
+            "ls-remote", "origin", "refs/heads/*", *sorted(wanted)).splitlines() if "\t" in line)
+        commits.update(refs[ref] for ref in wanted & refs.keys() if ref.startswith("refs/merge-requests/"))
+        shared_heads = {"refs/heads/" + name for name in ("main", "master", "dev", "qa")}
+        return [branch for ref, sha in refs.items() if ref.startswith("refs/heads/")
+                and valid_branch(branch := ref.removeprefix("refs/heads/"))
+                and (ref in wanted or (ref not in shared_heads and sha in commits))]
+
     def submit(self, body, operator=None):
         request = bounded(body, "request", 80)
         if not re.fullmatch(r"[A-Za-z0-9-]{16,80}", request):
@@ -381,12 +484,16 @@ class Console:
             items = self.workbook.entries(config["sheet"])
             config["refs"] = {key: config["branch"] for key in ("client", "game", "data")}
         elif config["mode"] == "branch":
-            if not config["source"] or not config["branch"]:
-                raise ApiError(400, "请填写功能分支和需求来源。")
+            if not config["source"]:
+                raise ApiError(400, "请填写 Jira 单号或需求链接。")
+            if not config["branch"]:
+                matches = self.branches(config["source"])["branches"]
+                if len(matches) != 1:
+                    raise ApiError(400, "请从候选分支中选择，或手动填写目标分支。")
+                config["branch"] = matches[0]
             config["refs"] = {key: bounded(body, key + "_branch") or config["branch"] for key in ("client", "game", "data")}
             for ref in [config["branch"], *config["refs"].values()]:
-                if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,179}", ref)
-                        or ".." in ref or "//" in ref or ref.endswith(("/", ".", ".lock"))):
+                if not valid_branch(ref):
                     raise ApiError(400, f"无效的 Git 分支名 {ref}。")
             items = [{"key": config["source"], "title": "功能分支验收"}]
         else:
@@ -438,7 +545,8 @@ class Console:
                 caps = []
             db.execute("UPDATE nodes SET seen=?, capabilities=?, checks=? WHERE id=?",
                        (time.time(), packed(caps), packed(checks), node["id"]))
-            active = db.execute("SELECT attempt FROM jobs WHERE node=? AND state IN ('running','review')",
+            db.execute("UPDATE nodes SET stop_supported=? WHERE id=?", (body.get("stop_supported") is True, node["id"]))
+            active = db.execute("SELECT attempt,state,stop_requested FROM jobs WHERE node=? AND state IN ('running','review')",
                                 (node["id"],)).fetchone()
             revision = bounded(body, "revision", 64)
             if revision and not re.fullmatch(r"[a-f0-9]{64}", revision):
@@ -449,7 +557,27 @@ class Console:
                     requested=CASE WHEN requested=excluded.installed THEN NULL ELSE requested END,
                     error=CASE WHEN requested=excluded.installed THEN NULL ELSE error END""", (node["id"], revision))
             update = self.pending_update(db, node["id"], release) if revision and not active else None
-        return {"root": saved, "active_attempt": active["attempt"] if active else None, "update": update}
+        return {"root": saved, "active_attempt": active["attempt"] if active else None, "update": update,
+                "stop_attempt": active["attempt"] if active and active["state"]=="running" and active["stop_requested"] else None}
+
+    def change_queue(self, job_id, action):
+        with self.db(write=True) as db:
+            row = db.execute("""SELECT jobs.*,nodes.stop_supported FROM jobs LEFT JOIN nodes ON nodes.id=jobs.node
+                                WHERE jobs.id=?""", (job_id,)).fetchone()
+            if not row:
+                raise ApiError(404, "批次不存在。")
+            if action == "delete":
+                if row["state"] != "queued":
+                    raise ApiError(409, "批次已离开等待队列，请刷新后查看。")
+                db.execute("""INSERT INTO retired_jobs(id,request,attempt,node,last_seq)
+                              SELECT id,request,attempt,node,last_seq FROM jobs WHERE id=?""", (job_id,))
+                db.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+                return {"deleted": True}
+            if row["state"] != "running" or not row["stop_supported"]:
+                raise ApiError(409, "批次不能停止，请核对运行状态和节点版本。")
+            db.execute("UPDATE jobs SET stop_requested=COALESCE(stop_requested,?) WHERE id=?",
+                       (time.time(), job_id))
+            return {"stop_requested": True}
 
     def claim(self, node):
         release = self.release()
@@ -515,6 +643,10 @@ class Console:
                 if payload.get("process_exited") is not True or any("result" not in item for item in items):
                     raise ApiError(409, "需确认执行退出并为每项保存结果。")
                 state, stage = "done", "批次结束"
+            elif kind == "execution_stopped":
+                if not row["stop_requested"] or payload.get("process_exited") is not True:
+                    raise ApiError(409, "未收到停止请求或进程尚未退出。")
+                state, stage = "done", "已停止"
             db.execute("INSERT INTO events(job,attempt,seq,kind,payload,created) VALUES (?,?,?,?,?,?)",
                        (row["id"], attempt, seq, kind, value, time.time()))
             db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=?,ended=? WHERE id=?",
@@ -631,6 +763,9 @@ class Handler(BaseHTTPRequestHandler):
     def get_page(self, path):
         if path == "/api/state":
             self.json_response(200, self.app.state())
+        elif path == "/api/branches":
+            source = parse_qs(urlsplit(self.path).query).get("source", [""])[0]
+            self.json_response(200, self.app.branches(bounded({"source": source}, "source")))
         elif match := re.fullmatch(r"/api/jobs/(\d+)(/events)?", path):
             job = self.app.detail(int(match[1]))
             if match[2]:
@@ -658,6 +793,8 @@ class Handler(BaseHTTPRequestHandler):
             # The loopback gateway attaches the authenticated browser session's name.
             operator = unquote(self.headers.get("X-K1-Operator", ""))
             result = self.app.submit(body, operator or None)
+        elif match := re.fullmatch(r"/api/jobs/(\d+)/(stop|delete)", path):
+            result = self.app.change_queue(int(match[1]), match[2])
         elif path == "/api/nodes":
             result = self.app.create_node(body)
         elif match := re.fullmatch(r"/api/jobs/(\d+)/close", path):

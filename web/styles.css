@@ -103,15 +103,20 @@
   #queueFilters button { background: transparent; color: var(--muted); border: 0; border-radius: 999px; padding: 5px 10px; }
   #queueFilters button[aria-pressed="true"] { background: var(--soft-blue); color: var(--accent); font-weight: 700; }
   .job-columns, .job {
-    display: grid; grid-template-columns: minmax(145px, 1.4fr) minmax(130px, 1fr) minmax(121px, .6fr) 56px;
+    display: grid; grid-template-columns: minmax(145px, 1.4fr) minmax(130px, 1fr) minmax(121px, .6fr) 105px;
     align-items: center; gap: 12px; padding-inline: 17px;
   }
   .job-columns { background: var(--control); border-block: 1px solid var(--line); padding-block: 6px; color: var(--muted); font-size: 12px; }
-  .job { min-height: 68px; padding-block: 10px; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+  .job { min-height: 68px; padding-block: 10px; border-bottom: 1px solid var(--line); color: var(--ink); cursor: pointer; }
   .job:last-child { border-bottom: 0; }
   .job:hover { background: var(--control); }
   .job:focus-visible { outline-offset: -3px; }
-  .job strong, .job small { display: block; overflow-wrap: anywhere; }
+  .job-title, .job small { display: block; overflow-wrap: anywhere; }
+  .job-title { color: inherit; font-weight: 700; text-decoration: none; }
+  .job-title:hover { text-decoration: underline; }
+  .job-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+  .queue-action { min-height: 28px; padding: 3px 8px; font-size: 12px; color: var(--red); }
+  #branchCandidates { margin-top: 6px; }
   .job small { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .job-phase > div:first-child { display: flex; justify-content: space-between; gap: 7px; font-size: 12px; color: var(--muted); }
   .job .pill { width: max-content; }
@@ -270,6 +275,8 @@
     .job { grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; padding-inline: 12px; }
     .job-phase { grid-column: 1/-1; grid-row: 2; }
     .job-open { display: none; }
+    .job-controls { grid-row: 3; grid-column: 2; }
+    .job-controls:not(:has(button)) { display: none; }
     .wizard-layout { grid-template-columns: minmax(0,1fr); }
     .log-header { flex-wrap: wrap; }
     .entry { grid-template-columns: 62px 26px minmax(0,1fr); gap: 6px; font-size: 12px; }

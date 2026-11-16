@@ -49,8 +49,16 @@
             <div class="field"><label for="releaseBranch">目标分支</label><select id="releaseBranch" name="branch"><option>dev</option><option>qa</option></select></div>
           </fieldset>
           <fieldset id="branchFields" hidden disabled>
-            <div class="field"><label for="featureBranch">目标功能分支</label><input id="featureBranch" name="branch" type="text" required maxlength="180" placeholder="dev_NK-12345"></div>
             <div class="field"><label for="source">Jira 单号或需求链接</label><input id="source" name="source" type="text" required maxlength="250"></div>
+            <div class="field">
+              <label for="featureBranch">目标功能分支</label>
+              <div class="sheet-controls">
+                <input id="featureBranch" name="branch" type="text" maxlength="180" placeholder="可按 Jira 单号查找">
+                <button id="lookupBranch" class="secondary" type="button">查找分支</button>
+              </div>
+              <p id="branchLookupStatus" class="field-note" role="status"></p>
+              <select id="branchCandidates" aria-label="候选分支" hidden></select>
+            </div>
             <details class="node-add">
               <summary>单独设置三端分支</summary>
               <div class="field"><label for="clientBranch">客户端</label><input id="clientBranch" name="client_branch" type="text"></div>

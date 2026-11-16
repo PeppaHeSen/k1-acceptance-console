@@ -23,6 +23,8 @@ let queueFilter = "all";
 let queueSnapshot;
 let sheetChoice = "";
 let sheetRefreshError = "";
+let branchLookup;
+let inferredBranch = "";
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const transparency = byId("glassTransparency");
 const themeChoices = [...document.querySelectorAll('input[name="theme"]')];
@@ -93,7 +95,9 @@ function label(text, tone = "") {
 }
 
 function jobStatus(job) {
-  const badge = label(job.state === "running" ? "验收中" : stateNames[job.state],
+  const status = job.state === "done" && job.stage === "已停止" ? "已停止"
+    : job.state === "running" ? (job.stop_requested ? "正在停止" : "验收中") : stateNames[job.state];
+  const badge = label(status,
                       job.state === "running" ? "active" : "");
   if (job.started) {
     const clock = document.createElement("time");
@@ -168,6 +172,46 @@ function modeChanged() {
   byId("branchFields").disabled = byId("branchFields").hidden = !branch;
   byId("versionFields").disabled = byId("versionFields").hidden = branch;
   nodeOptions();
+}
+
+async function findBranch() {
+  const source = byId("source").value.trim();
+  if (!source) {
+    byId("source").reportValidity();
+    return;
+  }
+  if (branchLookup?.source !== source) {
+    branchLookup = {source, result:api("branches?source="+encodeURIComponent(source))};
+  }
+  const lookup = branchLookup;
+  const button = byId("lookupBranch");
+  const candidates = byId("branchCandidates");
+  const previous = byId("featureBranch").value;
+  button.disabled = true;
+  candidates.hidden = true;
+  set("branchLookupStatus","正在查找客户端分支…");
+  try {
+    const {branches,basis} = await lookup.result;
+    if (source !== byId("source").value.trim() || byId("featureBranch").value!==previous) return;
+    if (branches.length===1) {
+      byId("featureBranch").value = inferredBranch = branches[0];
+      set("branchLookupStatus",basis==="jira" ? "已按 Jira 关联核实分支。" : "已按单号匹配远端分支。");
+    } else if (branches.length) {
+      choices(candidates,branches.map(ref=>[ref,ref]),"请选择候选分支");
+      candidates.value = "";
+      candidates.hidden = false;
+      set("branchLookupStatus","找到多个候选，请选择或手动填写。");
+    } else {
+      set("branchLookupStatus","未找到匹配的远端分支，请手动填写。");
+    }
+  } catch(error) {
+    if (source===byId("source").value.trim()) set("branchLookupStatus",error.name==="TimeoutError" ? "查询超时，请重试或手动填写。" : error.message);
+  } finally {
+    if (branchLookup===lookup) {
+      branchLookup = undefined;
+      button.disabled = false;
+    }
+  }
 }
 
 function nodeOptions() {
@@ -245,7 +289,7 @@ function renderDashboard() {
     ["running","review","disconnected"].includes(job.state) : job.state===queueFilter));
   const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
     job.config.sheet_name,job.config.method,job.config.server,nodeName(job.node || job.assigned),
-    job.started,job.ended,job.waiting || job.stage,completion(job)]));
+    job.started,job.ended,job.waiting || job.stage,job.stop_requested,canStop(job),completion(job)]));
   if (snapshot!==queueSnapshot) {
     queueSnapshot = snapshot;
     renderQueue(jobs);
@@ -261,13 +305,43 @@ function renderDashboard() {
   tick();
 }
 
+function canStop(job) {
+  return job.state==="running" && view.nodes.some(node=>node.id===job.node && node.stop_supported);
+}
+
+function queueAction(job, action, caption) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary queue-action";
+  button.textContent = caption;
+  button.setAttribute("aria-label",caption+"批次 #"+job.id);
+  button.addEventListener("click",async event=>{
+    event.stopPropagation();
+    if (!confirm(action==="stop" ? `停止批次 #${job.id}？节点完成清理后会更新状态。` : `删除等待中的批次 #${job.id}？`)) return;
+    button.disabled = true;
+    try {
+      await api(`jobs/${job.id}/${action}`,{});
+      message(action==="stop" ? `已请求停止批次 #${job.id}。` : `已删除批次 #${job.id}。`);
+      await refreshState();
+    } catch (error) {
+      message(error.message);
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
 function renderQueue(jobs) {
   byId("queue").replaceChildren(...jobs.map(job => {
-    const row = document.createElement("a");
-    row.href = `#batch-${job.id}`;
+    const row = document.createElement("div");
     row.className = "job";
+    row.addEventListener("click",event=>{
+      if (!event.target.closest("button,a")) location.hash = `#batch-${job.id}`;
+    });
     const group = document.createElement("span");
-    const title = document.createElement("strong");
+    const title = document.createElement("a");
+    title.href = `#batch-${job.id}`;
+    title.className = "job-title";
     title.textContent = job.config.mode==="branch" ? `#${job.id} · ${job.config.source}` : `#${job.id} · ${job.config.sheet_name} 版本日验收`;
     const detail = document.createElement("small");
     detail.textContent = [job.config.branch,job.config.method,job.config.server && job.config.server+" 服",
@@ -301,7 +375,16 @@ function renderQueue(jobs) {
     const open = document.createElement("span");
     open.className = "job-open";
     open.textContent = "详情 →";
-    row.append(group,phase,jobStatus(job),open);
+    const controls = document.createElement("div");
+    controls.className = "job-controls";
+    if (job.state==="queued") controls.append(queueAction(job,"delete","删除"));
+    else if (canStop(job)) {
+      const stop = queueAction(job,"stop",job.stop_requested ? "正在停止" : "停止");
+      stop.disabled = Boolean(job.stop_requested);
+      controls.append(stop);
+    }
+    controls.append(open);
+    row.append(group,phase,jobStatus(job),controls);
     return row;
   }));
   if (!jobs.length) set("queue","暂无符合条件的批次");
@@ -391,7 +474,7 @@ async function refreshJob(id, generation) {
     set("context",[modeSummary(job.config),job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
-    set("stage",job.stage || "等待节点接单");
+    set("stage",job.state==="running" && job.stop_requested ? "正在停止，等待节点清理。" : job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
     const counts = completion(job);
     setProgress(byId("progress"),counts);
@@ -588,6 +671,20 @@ for (const name of ["animationend","animationcancel"]) {
 }
 window.addEventListener("hashchange",renderRoute);
 byId("setupNode").addEventListener("change",renderSetup);
+byId("source").addEventListener("input",()=>{
+  if (byId("featureBranch").value===inferredBranch) byId("featureBranch").value = "";
+  inferredBranch = "";
+  byId("branchCandidates").hidden = true;
+  set("branchLookupStatus","");
+});
+byId("lookupBranch").addEventListener("click",findBranch);
+byId("featureBranch").addEventListener("input",()=>{
+  inferredBranch = "";
+  set("branchLookupStatus","");
+});
+byId("branchCandidates").addEventListener("change",event=>{
+  byId("featureBranch").value = inferredBranch = event.target.value;
+});
 byId("sheet").addEventListener("change",event=>{ sheetChoice = event.target.value; });
 byId("refresh").addEventListener("click",async event => {
   const button = event.currentTarget;
@@ -603,6 +700,12 @@ byId("refresh").addEventListener("click",async event => {
 });
 action(form,async data => {
   const options = Object.fromEntries(data);
+  if (options.mode==="branch" && !options.branch.trim()) {
+    await findBranch();
+    if (options.source.trim()!==byId("source").value.trim()) return;
+    options.branch = byId("featureBranch").value.trim();
+    if (!options.branch) return;
+  }
   const signature = JSON.stringify(options);
   if (!submitAttempt || submitAttempt.signature !== signature) {
     const request = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2,"0")).join("");

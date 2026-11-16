@@ -27,6 +27,11 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
+WORKER_VERSION = "0.11.0"
+
+
+class ExecutionStopped(Exception):
+    pass
 
 
 def normalize_cases(cases):
@@ -128,6 +133,7 @@ class Node:
         self.http = build_opener(ProxyHandler({}), HTTPSHandler(context=self.tls))
         self.attempt = json.loads(self.ledger.read_text(encoding="utf-8")) if self.ledger.exists() else None
         self.stop = threading.Event()
+        self.cancel_attempt = None
         source = Path(__file__).resolve()
         address = urlsplit(self.config["url"])
         self.revision = (hashlib.sha256(source.read_bytes()).hexdigest()
@@ -252,8 +258,44 @@ class Node:
                     self.caps.append("真机")
 
     def heartbeat(self):
-        return self.call("heartbeat", {"root": self.root, "os": self.os_name,
-                                       "capabilities": self.caps, "checks": self.checks, "revision":self.revision})
+        reply = self.call("heartbeat", {"root": self.root, "os": self.os_name,
+                                        "capabilities": self.caps, "checks": self.checks,
+                                        "revision": self.revision, "stop_supported": True})
+        if reply.get("stop_attempt"):
+            self.cancel_attempt = reply["stop_attempt"]
+        return reply
+
+    def check_stopped(self):
+        if self.cancel_attempt == self.attempt["id"]:
+            raise ExecutionStopped
+
+    @contextmanager
+    def watch_stop(self, process):
+        attempt = self.attempt["id"]
+        finished = threading.Event()
+
+        def watch():
+            while not finished.wait(.25):
+                if self.cancel_attempt != attempt:
+                    continue
+                try:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                except ProcessLookupError:
+                    pass
+                return
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            finished.set()
+            watcher.join()
 
     def install_update(self, update):
         target = update["worker_sha256"]
@@ -361,7 +403,7 @@ class Node:
         with error_path.open("wb") as error, subprocess.Popen(
             args, cwd=skill, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=error, text=True, encoding="utf-8", errors="replace",
-        ) as process:
+        ) as process, self.watch_stop(process):
             self.attempt["pid"] = process.pid
             self.persist()
             expired = threading.Event()
@@ -398,7 +440,9 @@ class Node:
                 if progress:
                     self.event("ai_output", text="".join(progress))
                     streamed = True
-                if process.wait() or expired.is_set() or not completed or not streamed:
+                returncode = process.wait()
+                self.check_stopped()
+                if returncode or expired.is_set() or not completed or not streamed:
                     raise RuntimeError("Claude Code 执行失败或超时，请查看节点日志。")
             finally:
                 timeout.cancel()
@@ -410,6 +454,7 @@ class Node:
         self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": []}
         self.persist()
         try:
+            self.check_stopped()
             config = job["config"]
             if (self.os_name == "macOS" and self.config.get("unity_runtime")
                     and config["method"] == "Unity" and config["server"]):
@@ -417,7 +462,9 @@ class Node:
                 return
             self.event("stage_changed", text="正在核对技能与三端 Git 版本")
             skill, sha, fresh = self.sync_skill(self.check_skill())
+            self.check_stopped()
             versions = self.versions(root, job["config"])
+            self.check_stopped()
             self.event("execution_started", contract_version=API_VERSION, skill_version=sha,
                        root=root, versions=versions, options=job["config"], skill_remote_verified=fresh)
             if not fresh:
@@ -427,6 +474,7 @@ class Node:
             missing = [role for role, info in versions.items() if not info["target"]]
             mismatch = [role for role, info in versions.items() if info["target"] and info["local"] != info["target"]]
             for item in job["items"]:
+                self.check_stopped()
                 reasons = []
                 if missing:
                     reasons.append("远端目标分支不可核实：" + "、".join(missing))
@@ -439,6 +487,10 @@ class Node:
                            evidence={"reason": reason, "versions": versions, "skill_version": sha})
             self.event("execution_finished", process_exited=True, conclusion="链路联调结束",
                        writeback_enabled=False)
+            self.attempt["finished"] = True
+            self.persist()
+        except ExecutionStopped:
+            self.event("execution_stopped", text="批次已停止，节点已完成清理。", process_exited=True)
             self.attempt["finished"] = True
             self.persist()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -463,18 +515,24 @@ class Node:
             if not re.fullmatch(r"[0-9a-f]{40}", sha):
                 raise ValueError("Invalid client commit")
         except (subprocess.SubprocessError, IndexError, ValueError) as error:
+            self.check_stopped()
             raise RuntimeError(f"无法读取客户端分支 {ref}。") from error
+        self.check_stopped()
         try:
             command(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo)
         except subprocess.CalledProcessError:
             command(["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha],
                     cwd=repo, timeout=600)
+        self.check_stopped()
         self.event("stage_changed", text=f"正在还原验收工程并切换至 {sha[:12]}")
         with acceptance_checkout(repo, sha, run) as project:
+            self.check_stopped()
             exit_code = self.launch_unity(job, sha, project, run)
             self.event("stage_changed", text="正在还原验收改动并切回原客户端分支")
+        self.check_stopped()
         reports = self.unity_result(run, config, sha, exit_code, [item["key"] for item in job["items"]])
         for item in job["items"]:
+            self.check_stopped()
             report = reports[item["key"]]
             self.event("item_finished", key=item["key"], result=report["result"], evidence=report)
         self.event("execution_finished", process_exited=True, conclusion="Unity 实测结束，原工程已恢复",
@@ -501,10 +559,10 @@ class Node:
                    versions={"client": {"branch": ref, "target": sha, "local": sha}},
                    runtime={"server": config["server"], "manifest": str(run / "runtime.json")})
         self.event("stage_changed", text="正在启动 Unity 并导入目标工程")
+        self.check_stopped()
         with (run / "launch.log").open("ab") as log:
             launch = subprocess.Popen(
-                ["/usr/bin/open", "-n", "-W", "-a", str(editor.parents[2]), "--args",
-                 "-projectPath", str(project), "-logFile", str(run / "unity.log")],
+                [str(editor), "-projectPath", str(project), "-logFile", str(run / "unity.log")],
                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             )
         self.attempt["pid"] = launch.pid
@@ -531,12 +589,13 @@ class Node:
                     self.event("case_snapshot", key=key, cases=cases)
                     previous_cases[key] = cases
 
-        while launch.poll() is None:
-            upload_cases()
-            if not ready and (run / "unity.log").is_file():
-                ready = True
-                self.event("stage_changed", text=f"Unity 已启动 · 等待在 {config['server']} 服实测")
-            self.stop.wait(3)
+        with self.watch_stop(launch):
+            while launch.poll() is None:
+                upload_cases()
+                if not ready and (run / "unity.log").is_file():
+                    ready = True
+                    self.event("stage_changed", text=f"Unity 已启动 · 等待在 {config['server']} 服实测")
+                self.stop.wait(1)
         upload_cases()
         self.attempt.pop("pid", None)
         self.persist()
@@ -607,10 +666,10 @@ class Node:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", action="version", version="K1 Worker 0.10.0")
+    parser.add_argument("--version", action="version", version=f"K1 Worker {WORKER_VERSION}")
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
     node = Node(json.loads(args.config.read_text(encoding="utf-8")))
     node.pair(args.config.resolve())
-    print("K1 Worker 0.10.0 ready.", flush=True)
+    print(f"K1 Worker {WORKER_VERSION} ready.", flush=True)
     node.run()
