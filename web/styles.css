@@ -151,19 +151,24 @@
 
   .view-detail main { display: flex; flex-direction: column; }
   #detail { display: flex; flex: 1; flex-direction: column; min-width: 0; }
-  #detail > :not(.log) { flex-shrink: 0; }
+  #detail > :not(.list, .log) { flex-shrink: 0; }
   #state { padding: 0; background: transparent; }
   .run { padding: 14px 18px; }
   .run .field { margin-top: 7px; }
   .run #progressCount { margin: 0; }
-  .list { margin-top: 14px; overflow: hidden; }
-  .list-head { padding: 12px 18px; }
-  .table-wrap { overflow: auto; }
+  .list {
+    display: flex; flex-direction: column; min-height: 106px;
+    max-height: clamp(164px, 33dvh, 400px); margin-top: 14px; overflow: hidden;
+  }
+  .list-head { flex: none; padding: 12px 18px; }
+  .table-wrap { min-height: 0; overflow: auto; scroll-padding-top: 36px; }
+  .table-wrap:focus-visible { outline-offset: -3px; }
   .checklist-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 13px; }
   .checklist-result { width: 14%; }
   .checklist-evidence { width: 26%; }
   th, td { padding: 8px 14px 8px 18px; border-top: 1px solid var(--line); vertical-align: top; }
   th { background: var(--control); color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }
+  .checklist-table th { position: sticky; top: 0; z-index: 1; background: color-mix(in srgb, var(--card) 94%, var(--accent)); }
   td:nth-child(2) { white-space: nowrap; }
   td { overflow-wrap: anywhere; }
   td:nth-child(3) { color: var(--muted); }
@@ -179,11 +184,11 @@
   .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 3px 0 0 14px; }
   .case-id { color: var(--muted); white-space: nowrap; font-size: 12px; }
   .log {
-    --surface: var(--console); display: flex; flex: 1 0 282px; flex-direction: column;
+    --surface: var(--console); display: flex; flex: 1 0 244px; flex-direction: column;
     overflow: hidden; margin-top: 14px; color: var(--console-ink);
   }
   .log.collapsed { flex: none; }
-  .log-header { padding: 10px 16px; min-height: 48px; background: var(--console-head); }
+  .log-header { flex: none; padding: 10px 16px; min-height: 48px; background: var(--console-head); }
   #logToggle { display: inline-flex; align-items: center; gap: 8px; padding: 2px; background: none; border: 0; color: inherit; font-weight: 700; }
   #logToggle span { display: inline-block; font-size: 20px; line-height: .8; }
   #logToggle[aria-expanded="true"] span { transform: rotate(90deg); }
@@ -272,9 +277,17 @@
   #retentionEffect:empty, #retentionError:empty { margin: 0; }
   .settings-actions { display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); }
 
-  @media (min-width: 701px) and (min-height: 790px) {
+  @media (min-width: 701px) and (min-height: 740px) {
     .view-detail { height: 100dvh; }
     .view-detail main, #detail { min-height: 0; }
+    .table-wrap, #logEntries { overscroll-behavior-y: contain; }
+  }
+  @media (min-width: 701px) and (max-height: 899px) {
+    .view-detail main { padding-block: 16px; }
+    #detail .back { min-height: 38px; margin-bottom: 10px; }
+    #detail .page-intro { margin-bottom: 12px; }
+    .run { padding-block: 11px; }
+    .list, .log { margin-top: 12px; }
   }
   @media (max-width: 700px) {
     .top, main { width: calc(100% - 28px); }
@@ -290,6 +303,7 @@
     .job-controls { grid-row: 3; grid-column: 2; }
     .job-controls:not(:has(button)) { display: none; }
     .wizard-layout { grid-template-columns: minmax(0,1fr); }
+    .list { max-height: clamp(164px, 35dvh, 280px); }
     .log-header { flex-wrap: wrap; }
     .entry { grid-template-columns: 62px 26px minmax(0,1fr); gap: 6px; font-size: 12px; }
     th, td { padding-inline: 9px; }

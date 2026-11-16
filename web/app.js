@@ -700,6 +700,7 @@ byId("summaryToggle").addEventListener("click",event=>{
   if (!limited) followLatest();
 });
 byId("followLog").addEventListener("change",followLatest);
+new ResizeObserver(followLatest).observe(byId("logEntries"));
 byId("logToggle").addEventListener("click",event=>{
   const entries = byId("logEntries");
   const expanded = entries.hidden;
