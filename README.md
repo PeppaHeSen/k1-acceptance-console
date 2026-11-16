@@ -4,9 +4,11 @@ K1 验收台包含配置向导、版本日验收、分支验收、节点管理�
 
 克隆后可把仓库根目录的 [K1验收台-Agent部署说明.md](K1验收台-Agent部署说明.md) 交给 Agent，按主服务器或执行节点的角色部署。
 
+发布新版本时，可以让 Agent 使用仓库内的 [k1-console-release 技能](.agents/skills/k1-console-release/SKILL.md)。GitHub Release 完成、主节点部署验证通过后，技能会激活内网更新通知。
+
 ## 服务端与执行节点
 
-启用 Mac Unity 运行验收后，填写测试服 ID 的分支任务会在节点已配置的专用验收工程切换到目标提交并启动 Unity，由验收人员或本机 Agent 实测后回传结果。Worker 在切换前和验收结束后还原 Git 跟踪文件，最后切回原分支。其他批次走只读链路联调，记录 Git 版本核对和 AI 输出。
+启用 Mac Unity 运行验收后，填写测试服 ID 的批次会在节点已配置的专用验收工程切换到目标提交并启动 Unity，由验收人员或本机 Agent 按用例实测并回传结果。Worker 在切换前和验收结束后还原 Git 跟踪文件，最后切回原分支。其他批次走只读链路联调，记录 Git 版本核对和 AI 输出。
 
 1. 在部署账号下安装 Python 3.9 或以上、Git、DWS 和 Claude Code。先用该账号分别确认 DWS 可以读进包表、Claude Code 可以运行。节点还需要对应的 Unity 或真机环境。
 2. 选择部署主机上可写的运行目录。Mac 节点初始配置可用 `python3 provision.py --directory <运行目录> --node-root <三端工程根目录> --unity-editor <Unity可执行文件绝对路径>`。运行目录包含数据库、节点令牌、操作员口令和节点持久化数据，和代码分开放置。

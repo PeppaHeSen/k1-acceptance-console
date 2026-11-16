@@ -1,9 +1,11 @@
 """Mac and Windows execution node. Only the node can read its toolchain and project."""
 
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -12,16 +14,39 @@ import shutil
 import ssl
 import sqlite3
 import subprocess
+import sys
 from tempfile import NamedTemporaryFile
 import threading
 import time
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 
 REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
+CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
+
+
+def normalize_cases(cases):
+    if not isinstance(cases, list) or not 0 < len(cases) <= 60:
+        raise ValueError("用例清单需要 1 至 60 项。")
+    normalized = []
+    ids = set()
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("用例格式无效。")
+        key, title, state, evidence = (case.get(name, default) for name, default in
+                                       (("id",""), ("title",""), ("state","pending"), ("evidence","")))
+        if (not isinstance(key,str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}",key) or key in ids
+                or not isinstance(title,str) or not 0 < len(title.strip()) <= 160
+                or not isinstance(state,str) or state not in CASE_STATES
+                or not isinstance(evidence,str) or len(evidence)>600):
+            raise ValueError("用例编号、标题、状态或证据格式无效。")
+        ids.add(key)
+        normalized.append({"id":key,"title":title.strip(),"state":state,"evidence":evidence.strip()})
+    return normalized
 
 
 def command(args, cwd=None, timeout=30):
@@ -103,6 +128,10 @@ class Node:
         self.http = build_opener(ProxyHandler({}), HTTPSHandler(context=self.tls))
         self.attempt = json.loads(self.ledger.read_text(encoding="utf-8")) if self.ledger.exists() else None
         self.stop = threading.Event()
+        source = Path(__file__).resolve()
+        address = urlsplit(self.config["url"])
+        self.revision = (hashlib.sha256(source.read_bytes()).hexdigest()
+                         if address.scheme=="https" or address.hostname=="127.0.0.1" else "")
 
     def call(self, path, body):
         headers = {"Content-Type": "application/json"}
@@ -224,7 +253,47 @@ class Node:
 
     def heartbeat(self):
         return self.call("heartbeat", {"root": self.root, "os": self.os_name,
-                                       "capabilities": self.caps, "checks": self.checks})
+                                       "capabilities": self.caps, "checks": self.checks, "revision":self.revision})
+
+    def install_update(self, update):
+        target = update["worker_sha256"]
+        try:
+            response = self.call("update", {"target":target})
+            source = base64.b64decode(response["worker"], validate=True)
+            if not 0 < len(source) <= 512 * 1024 or hashlib.sha256(source).hexdigest() != target:
+                raise ValueError("Worker checksum mismatch")
+            path = Path(__file__).resolve()
+            compile(source, str(path), "exec")
+            original = path.read_bytes()
+
+            def replace(data):
+                with NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+                    temp = Path(handle.name)
+                    try:
+                        handle.write(data)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                        handle.close()
+                        temp.chmod(path.stat().st_mode & 0o777)
+                        os.replace(temp, path)
+                    finally:
+                        handle.close()
+                        temp.unlink(missing_ok=True)
+
+            replace(source)
+            print(f"Restarting K1 worker for release {update['version']}", flush=True)
+            try:
+                os.execv(sys.executable, [sys.executable, "-u", str(path), *sys.argv[1:]])
+            except OSError:
+                replace(original)
+                raise
+        except HTTPError as error:
+            if error.code == 409:
+                return
+            print(f"Worker update failed: HTTP {error.code}", flush=True)
+        except (OSError, ValueError, SyntaxError, KeyError) as error:
+            print(f"Worker update failed: {type(error).__name__}", flush=True)
+        self.call("update-failed", {"target":target})
 
     def loop_heartbeat(self):
         while not self.stop.wait(4):
@@ -343,7 +412,7 @@ class Node:
         try:
             config = job["config"]
             if (self.os_name == "macOS" and self.config.get("unity_runtime")
-                    and config["mode"] == "branch" and config["method"] == "Unity" and config["server"]):
+                    and config["method"] == "Unity" and config["server"]):
                 self.execute_unity(job, Path(root))
                 return
             self.event("stage_changed", text="正在核对技能与三端 Git 版本")
@@ -404,8 +473,9 @@ class Node:
         with acceptance_checkout(repo, sha, run) as project:
             exit_code = self.launch_unity(job, sha, project, run)
             self.event("stage_changed", text="正在还原验收改动并切回原客户端分支")
-        report = self.unity_result(run, config, sha, exit_code)
+        reports = self.unity_result(run, config, sha, exit_code, [item["key"] for item in job["items"]])
         for item in job["items"]:
+            report = reports[item["key"]]
             self.event("item_finished", key=item["key"], result=report["result"], evidence=report)
         self.event("execution_finished", process_exited=True, conclusion="Unity 实测结束，原工程已恢复",
                    writeback_enabled=False)
@@ -424,7 +494,8 @@ class Node:
             raise RuntimeError("节点配置的 Unity 版本与目标工程要求不一致。")
         manifest = {"batch": job["id"], "attempt": job["attempt"], "source": config["source"],
                     "server": config["server"], "client": sha, "project": str(project),
-                    "reference_branches": config["refs"], "notes": config["notes"]}
+                    "reference_branches": config["refs"], "notes": config["notes"], "items":job["items"],
+                    "cases_file": str(run / "cases.json")}
         save_json(run / "runtime.json", manifest)
         self.event("execution_started", contract_version=API_VERSION, root=str(project),
                    versions={"client": {"branch": ref, "target": sha, "local": sha}},
@@ -439,30 +510,60 @@ class Node:
         self.attempt["pid"] = launch.pid
         self.persist()
         ready = False
+        case_file = run / "cases.json"
+        previous_cases = {}
+        keys = {item["key"] for item in job["items"]}
+
+        def upload_cases():
+            try:
+                if case_file.stat().st_size > 200000:
+                    return
+                data = json.loads(case_file.read_bytes())
+                if isinstance(data,list) and len(keys)==1:
+                    data = {next(iter(keys)):data}
+                if not isinstance(data,dict) or not data.keys() <= keys:
+                    return
+                snapshots = {key:normalize_cases(cases) for key,cases in data.items()}
+            except (OSError, ValueError):
+                return
+            for key,cases in snapshots.items():
+                if cases != previous_cases.get(key):
+                    self.event("case_snapshot", key=key, cases=cases)
+                    previous_cases[key] = cases
+
         while launch.poll() is None:
+            upload_cases()
             if not ready and (run / "unity.log").is_file():
                 ready = True
                 self.event("stage_changed", text=f"Unity 已启动 · 等待在 {config['server']} 服实测")
             self.stop.wait(3)
+        upload_cases()
         self.attempt.pop("pid", None)
         self.persist()
         return launch.returncode
 
     @staticmethod
-    def unity_result(run, config, sha, exit_code):
+    def unity_result(run, config, sha, exit_code, keys):
         report_path = run / "result.json"
         if exit_code or not report_path.is_file():
             raise RuntimeError("Unity 已退出。请核对节点运行日志和验收回执。")
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            if (not isinstance(report, dict) or report.get("server") != config["server"]
-                    or report.get("client") != sha or report.get("result") not in {"pass", "fail", "blocked"}
-                    or not isinstance(report.get("reason"), str) or not 0 < len(report["reason"].strip()) <= 2000
-                    or not isinstance(report.get("evidence"), str) or not 0 < len(report["evidence"].strip()) <= 1000):
+            if not isinstance(report,dict) or report.get("server") != config["server"] or report.get("client") != sha:
                 raise ValueError("Invalid acceptance report")
+            items = report.get("items")
+            if items is None and len(keys)==1:
+                items = {keys[0]:report}
+            if not isinstance(items,dict) or items.keys() != set(keys):
+                raise ValueError("Missing item reports")
+            for result in items.values():
+                if (not isinstance(result,dict) or result.get("result") not in ("pass","fail","blocked")
+                        or not isinstance(result.get("reason"),str) or not 0 < len(result["reason"].strip()) <= 2000
+                        or not isinstance(result.get("evidence"),str) or not 0 < len(result["evidence"].strip()) <= 1000):
+                    raise ValueError("Invalid item result")
         except (OSError, ValueError) as error:
             raise RuntimeError("回执缺少目标服、客户端提交或实测证据，请核对后结束批次。") from error
-        return report
+        return {key:{**result,"server":config["server"],"client":sha} for key,result in items.items()}
 
     def run(self):
         heartbeat = threading.Thread(target=self.loop_heartbeat, daemon=True)
@@ -489,6 +590,9 @@ class Node:
                         self.setup(settings["root"])
                         last_check = time.monotonic()
                         self.heartbeat()
+                    if not self.attempt and settings.get("update"):
+                        self.install_update(settings["update"])
+                        continue
                     if not self.attempt and self.caps:
                         claim = self.call("claim", {})
                         if claim["job"]:

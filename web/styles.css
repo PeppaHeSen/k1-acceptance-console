@@ -172,3 +172,69 @@
   @media(prefers-reduced-motion:no-preference) {
     progress::-webkit-progress-value { transition:width .25s ease }
   }
+/* Queue, batch detail and compact dialogs */
+body { min-height:100dvh; display:flex; flex-direction:column }
+main { width:100%; flex:1; padding-bottom:24px }
+.page-intro { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:8px 0 17px }
+.page-intro .primary { width:auto; white-space:nowrap }
+.header-actions .update-available { background:#f4e4c2; border-color:#f4e4c2; color:#68420f }
+dialog { padding:0; width:min(540px,calc(100vw - 28px)); max-height:calc(100dvh - 30px); border:1px solid var(--line); border-radius:13px; color:var(--ink) }
+dialog::backdrop { background:#10222088 }
+dialog .config { border:0; box-shadow:none }
+dialog .config > .primary { margin-top:14px }
+.dialog-head,.dialog-line { display:flex; justify-content:space-between; align-items:center; gap:10px }
+.dialog-head { padding:13px 17px; border-bottom:1px solid var(--line) }
+.dialog-content { padding:13px 17px }
+.dialog-content > p { margin:0 0 10px; white-space:pre-wrap }
+.job-card { padding:0; overflow:hidden }
+#queueFilters { display:flex; padding:8px 12px; gap:4px }
+#queueFilters button { background:transparent; color:var(--muted); border:0; border-radius:6px; padding:5px 9px }
+#queueFilters button[aria-pressed=true] { background:var(--mint); color:var(--teal); font-weight:700 }
+.job-columns,.job { display:grid; grid-template-columns:minmax(150px,1.45fr) minmax(135px,1.05fr) minmax(125px,.7fr) 58px; align-items:center; column-gap:16px; padding-inline:17px }
+.job-columns { background:#f4f8f7; border-block:1px solid var(--line); padding-block:6px; color:var(--muted); font-size:12px }
+.job-list { display:block; padding:0; margin:0; max-height:none }
+.job { background:white; border:0; border-bottom:1px solid var(--line); border-radius:0; min-height:74px; padding-block:10px }
+.job:last-child { border-bottom:0 }
+.job:hover { background:#f4f9f7 }
+.job small { font-size:12px }
+.job-phase > div { display:flex; justify-content:space-between; gap:7px; font-size:12px }
+.job-phase progress { margin:6px 0 0; height:5px }
+.job .pill { width:max-content }
+.job-open { color:var(--teal); font-size:12px; white-space:nowrap }
+.job-list:not(:has(.job)) { padding:12px 17px; color:var(--muted) }
+.pill:has(.elapsed) { display:inline-flex; align-items:center; gap:6px }
+.elapsed { padding-left:6px; border-left:1px solid #0002 }
+progress.unknown { background:linear-gradient(90deg,#e9eff0 0%,#e9eff0 36%,#518ebd 36%,#518ebd 58%,#e9eff0 58%); background-size:240% 100%; animation:progress-slide 1.9s linear infinite }
+progress.unknown::-webkit-progress-bar { background:transparent }
+@keyframes progress-slide { from { background-position:150% 0 } to { background-position:-100% 0 } }
+@media(prefers-reduced-motion:reduce) { progress.unknown { animation:none } }
+.view-detail main { display:flex; flex-direction:column }
+#detail { width:100%; max-width:1060px; flex:1; display:flex; flex-direction:column; margin:0 auto }
+#detail .back { align-self:flex-start }
+#detail .page-intro { margin-top:0 }
+.detail-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+#detail #state { padding:0; background:transparent }
+#detail .run { padding:14px 17px }
+#detail .run .field { margin-top:7px }
+#detail .run progress { margin-bottom:5px }
+.case-list { white-space:normal; max-width:52ch }
+.case-list summary { padding:5px 0; color:var(--teal); font-size:12px }
+.case-list p { margin:4px 0; font-size:12px; color:var(--ink) }
+#logsPanel { position:relative }
+#logsPanel[open] { flex:1; display:flex; flex-direction:column }
+#logsPanel summary { padding-right:135px }
+.log-follow { position:absolute; top:0; right:0; padding:12px 14px; margin:0; font-weight:400; color:var(--muted); white-space:nowrap }
+.log-follow input { accent-color:var(--teal) }
+#logEntries { min-height:155px; max-height:none; flex:1 1 0; overflow:auto; padding:6px 17px 12px; color:#f1faf5; background:#192e27; border-radius:0 0 12px 12px }
+#logEntries .entry { grid-template-columns:69px 44px minmax(0,1fr); border-bottom-color:#ffffff20 }
+#logEntries .entry time { color:#b5cfc3 }
+#logEntries .entry span { color:#b5d6ff; font-size:12px }
+@media(max-width:700px) {
+  .job-columns { display:none }
+  .job { grid-template-columns:minmax(0,1fr) auto; gap:6px 9px; padding-inline:10px }
+  .job-phase { grid-column:1/-1; grid-row:2 }
+  .job-open { display:none }
+  .header-actions .secondary { padding-inline:5px; font-size:11px }
+  #logEntries .entry { grid-template-columns:62px minmax(0,1fr) }
+  #logEntries .entry p { grid-column:2 }
+}

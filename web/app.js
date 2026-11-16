@@ -15,6 +15,10 @@ let requestedPairing;
 let detailGeneration = 0;
 const logs = new Set();
 const time = value => new Date(value * 1000).toLocaleString("zh-CN");
+const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour12:false});
+const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
+const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
+let queueFilter = "all";
 
 async function api(path, body) {
   const result = await fetch("/api/" + path, body === undefined ? {} : {
@@ -36,6 +40,50 @@ function label(text, tone = "") {
   elem.className = "pill " + tone;
   elem.textContent = text;
   return elem;
+}
+
+function jobStatus(job) {
+  const badge = label(job.state === "running" ? "验收中" : stateNames[job.state],
+                      job.state === "running" ? "active" : "");
+  if (job.started) {
+    const clock = document.createElement("time");
+    clock.className = "mono elapsed";
+    clock.setAttribute("aria-label","执行耗时");
+    clock.dataset.start = job.started;
+    clock.dataset.end = job.ended || "";
+    badge.append(clock);
+  }
+  return badge;
+}
+
+function tick() {
+  for (const clock of document.querySelectorAll("time[data-start]")) {
+    const elapsed = Math.max(0,Math.floor((Number(clock.dataset.end) || Date.now()/1000)-Number(clock.dataset.start)));
+    clock.textContent = [Math.floor(elapsed/3600),Math.floor(elapsed/60)%60,elapsed%60]
+      .map(value=>String(value).padStart(2,"0")).join(":");
+  }
+}
+
+function completion(job) {
+  if (job.config.mode === "branch" && job.items.length === 1) {
+    const cases = job.items[0].cases;
+    if (cases?.length) {
+      return [cases.filter(item=>["pass","fail","blocked"].includes(item.state)).length,cases.length,"用例"];
+    }
+    if (job.state === "running") return null;
+  }
+  return [job.items.filter(item=>item.result).length,job.items.length,"事项"];
+}
+
+function setProgress(bar, counts) {
+  if (!counts) {
+    bar.removeAttribute("value");
+    bar.classList.add("unknown");
+    return;
+  }
+  bar.max = Math.max(1,counts[1]);
+  bar.value = counts[0];
+  bar.classList.remove("unknown");
 }
 
 function nodeName(id) {
@@ -98,27 +146,88 @@ function renderDashboard() {
   choices(byId("sheet"),view.sheets.items.map(sheet => [sheet.id,sheet.name]),"请选择进包页签");
   set("sheetTime",view.sheets.time ? "最近成功刷新 " + time(view.sheets.time) : "点击「刷新页签」加载钉钉进包表。");
   set("online", `${view.nodes.filter(node => node.online).length} 台节点在线`);
-  set("counts", `排队 ${view.jobs.filter(job => job.state === "queued").length} · 共 ${view.jobs.length} 批`);
+  set("counts", `${view.jobs.filter(job=>job.state==="running").length} 批验收中 · ${view.jobs.filter(job=>job.state==="queued").length} 批排队`);
   nodeOptions();
-  byId("queue").replaceChildren(...view.jobs.map(job => {
+  const jobs = view.jobs.filter(job=>queueFilter==="all" || (queueFilter==="running" ?
+    ["running","review","disconnected"].includes(job.state) : job.state===queueFilter));
+  byId("queue").replaceChildren(...jobs.map(job => {
     const row = document.createElement("a");
     row.href = `#batch-${job.id}`;
     row.className = "job";
     const group = document.createElement("span");
     const title = document.createElement("strong");
-    title.textContent = `#${job.id} · ${modeSummary(job.config)}`;
+    title.textContent = job.config.mode==="branch" ? `#${job.id} · ${job.config.source}` : `#${job.id} · ${job.config.sheet_name} 版本日验收`;
     const detail = document.createElement("small");
-    detail.textContent = job.waiting || `${nodeName(job.node)} · 已处理 ${job.items.filter(item => item.result).length}/${job.items.length}`;
+    detail.textContent = [job.config.branch,job.config.method,job.config.server && job.config.server+" 服",
+      nodeName(job.node || job.assigned)].filter(Boolean).join(" · ");
     group.append(title, detail);
-    row.append(group, label(stateNames[job.state] || job.state, job.state === "running" ? "active" : ""));
+    const phase = document.createElement("div");
+    phase.className = "job-phase";
+    const stage = document.createElement("div");
+    const counts = completion(job);
+    const description = document.createElement("span");
+    description.textContent = job.waiting || job.stage;
+    stage.append(description);
+    if (counts && job.state!=="queued") {
+      const count = document.createElement("span");
+      count.className = "mono";
+      count.textContent = counts[0]+" / "+counts[1];
+      stage.append(count);
+    }
+    const progress = document.createElement("progress");
+    progress.setAttribute("aria-label","验收进度");
+    setProgress(progress,counts);
+    phase.append(stage,progress);
+    const open = document.createElement("span");
+    open.className = "job-open";
+    open.textContent = "详情 →";
+    row.append(group,phase,jobStatus(job),open);
     return row;
   }));
-  if (!view.jobs.length) set("queue","暂无批次");
+  if (!jobs.length) set("queue","暂无符合条件的批次");
   byId("nodes").replaceChildren(...view.nodes.map(node => {
     const row = document.createElement("li");
     const title = document.createElement("strong");
     title.textContent = `${node.name} · ${node.os}`;
     row.append(title, label(nodeStatus(node),node.capabilities.length ? "pass" : "review"));
+    return row;
+  }));
+  renderRelease();
+  tick();
+}
+
+function renderRelease() {
+  const release = view.release;
+  byId("releaseButton").hidden = !release;
+  if (!release) return;
+  const show = loadedVersion !== release.version || view.nodes.some(node=>node.update && node.update!=="installed");
+  byId("releaseButton").classList.toggle("update-available",show);
+  set("releaseButton",show ? "有新版本 · "+release.version : "版本 "+release.version);
+  set("releaseTitle","更新到 "+release.version);
+  set("releaseNotes",release.notes);
+  set("browserVersion","当前网页 "+loadedVersion);
+  byId("reloadBrowser").disabled = loadedVersion===release.version;
+  byId("nodeUpdates").replaceChildren(...view.nodes.map(node=>{
+    const row = document.createElement("li");
+    const title = document.createElement("span");
+    title.textContent = node.name+" · "+nodeStatus(node);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.textContent = {installed:"已更新",requested:node.busy?"验收结束后更新":"等待更新",
+      failed:"重试更新",available:node.busy?"结束后更新":"更新并重启"}[node.update] || "需初次部署";
+    button.disabled = !node.update || ["installed","requested"].includes(node.update);
+    button.addEventListener("click",async ()=>{
+      button.disabled = true;
+      try {
+        await api("nodes/"+node.id+"/update",{target:release.worker_sha256});
+        await refreshState();
+      } catch(error) {
+        button.disabled = false;
+        set("releaseNotes",error.message);
+      }
+    });
+    row.append(title,button);
     return row;
   }));
 }
@@ -170,13 +279,13 @@ async function refreshJob(id, generation) {
     set("detailTitle",`验收批次 #${job.id}`);
     set("context",[modeSummary(job.config),job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : ""].filter(Boolean).join(" · "));
-    set("state",stateNames[job.state] || job.state);
+    byId("state").replaceChildren(jobStatus(job));
     set("stage",job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
-    byId("progress").max = Math.max(job.items.length,1);
-    byId("progress").value = job.items.filter(item => item.result).length;
+    setProgress(byId("progress"),completion(job));
     set("summary",Object.entries(resultNames).map(([key,name]) =>
       `${name} ${job.items.filter(item => item.result === key).length}`).join(" · ") + " · 未回写");
+    const expanded = new Set([...byId("items").querySelectorAll("details[open]")].map(details=>details.dataset.item));
     byId("items").replaceChildren(...job.items.map(item => {
       const row = document.createElement("tr");
       for (const field of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行",item.evidence?.reason || ""]) {
@@ -184,14 +293,33 @@ async function refreshJob(id, generation) {
         cell.textContent = field;
         row.append(cell);
       }
+      if (item.cases?.length) {
+        const details = document.createElement("details");
+        details.className = "case-list";
+        details.dataset.item = item.key;
+        details.open = expanded.has(item.key) || job.config.mode==="branch";
+        const title = document.createElement("summary");
+        const completed = item.cases.filter(test=>["pass","fail","blocked"].includes(test.state)).length;
+        title.textContent = `测试用例 · 已处理 ${completed} / ${item.cases.length}`;
+        details.append(title);
+        for (const test of item.cases) {
+          const line = document.createElement("p");
+          line.append(document.createTextNode(test.id+" · "+test.title+" "),label(caseLabels[test.state]));
+          if (test.evidence) line.append(document.createTextNode(" · "+test.evidence));
+          details.append(line);
+        }
+        row.firstElementChild.append(details);
+      }
       return row;
     }));
+    tick();
   } catch(error) { message(error.message); }
 }
 
 function renderRoute() {
   const id = /^#batch-(\d+)$/.exec(location.hash)?.[1];
   const setup = location.hash === "#setup";
+  document.body.classList.toggle("view-detail",Boolean(id));
   byId("dashboard").hidden = Boolean(id) || setup;
   byId("setup").hidden = !setup;
   byId("detail").hidden = !id;
@@ -210,15 +338,22 @@ function renderRoute() {
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
-    const line = document.createElement("p");
-    line.style.whiteSpace = "pre-wrap";
-    line.textContent = payload.text || payload.conclusion || (data.kind === "execution_started"
+    const line = document.createElement("div");
+    line.className = "entry";
+    const stamp = document.createElement("time");
+    stamp.textContent = clockTime(data.created);
+    const kind = document.createElement("span");
+    kind.textContent = data.kind==="ai_output" ? "AI" : "节点";
+    const content = document.createElement("p");
+    content.textContent = payload.text || payload.conclusion || (data.kind === "execution_started"
       ? payload.runtime
         ? `Unity 工程 ${payload.root}\n客户端提交 ${payload.versions.client.target}\n验收交接文件 ${payload.runtime.manifest}`
         : "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
+      : data.kind === "case_snapshot" ? payload.key+" · 已同步 "+payload.cases.length+" 条用例"
       : `${payload.key || ""} ${resultNames[payload.result] || ""}`.trim() || data.kind);
+    line.append(stamp,kind,content);
     byId("logEntries").append(line);
-    if (data.kind !== "ai_output") refreshJob(id,generation);
+    if (byId("followLog").checked) byId("logEntries").scrollTop = byId("logEntries").scrollHeight;
   };
 }
 
@@ -235,6 +370,28 @@ function action(element, handler) {
 }
 
 form.addEventListener("change",modeChanged);
+for (const [button,dialog] of [["online","nodeDialog"],["newJob","jobDialog"],["releaseButton","releaseDialog"]]) {
+  byId(button).addEventListener("click",()=>byId(dialog).showModal());
+}
+document.querySelectorAll("[data-close-dialog]").forEach(element=>element.addEventListener("click",()=>element.closest("dialog").close()));
+byId("reloadBrowser").addEventListener("click",()=>location.reload());
+byId("queueFilters").addEventListener("click",event=>{
+  const button = event.target.closest("button[data-filter]");
+  if (!button) return;
+  queueFilter = button.dataset.filter;
+  byId("queueFilters").querySelectorAll("button").forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
+  renderDashboard();
+});
+byId("summaryToggle").addEventListener("click",event=>{
+  const button = event.currentTarget;
+  const limited = button.getAttribute("aria-pressed")==="false";
+  button.setAttribute("aria-pressed",String(limited));
+  button.textContent = limited ? "显示全部详情" : "仅看进度";
+  byId("checklist").hidden = byId("logsPanel").hidden = limited;
+});
+byId("followLog").addEventListener("change",event=>{
+  if (event.target.checked) byId("logEntries").scrollTop = byId("logEntries").scrollHeight;
+});
 window.addEventListener("hashchange",renderRoute);
 byId("setupNode").addEventListener("change",renderSetup);
 byId("refresh").addEventListener("click",async event => {
@@ -254,6 +411,7 @@ action(form,async data => {
   }
   const {id} = await api("jobs",{...options,request:submitAttempt.request});
   submitAttempt = null;
+  byId("jobDialog").close();
   message(`已提交批次 #${id}。`);
   await refreshState();
 });
@@ -277,6 +435,7 @@ action(byId("closeReview"),async () => {
 renderRoute();
 refreshState();
 setInterval(refreshState,3000);
+setInterval(tick,1000);
 fetch("/operator").then(response => response.ok ? response.json() : {}).then(({name}) => {
   if (name) {
     set("switchOperator",name + " · 切换");

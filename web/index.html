@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="k1-version" content="__K1_VERSION__">
   <title>K1 验收台</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
@@ -12,8 +13,8 @@
     <div class="top">
       <div class="brand"><span class="mark">K1</span> 验收台</div>
       <div class="header-actions">
-        <span id="online" class="worker"></span>
-        <a href="#setup">节点配置</a>
+        <button id="online" class="secondary" type="button" title="查看执行节点"></button>
+        <button id="releaseButton" class="secondary" type="button" hidden></button>
         <form id="operatorSession" method="post" action="/logout" hidden>
           <button id="switchOperator" type="submit" class="secondary" title="切换操作员"></button>
         </form>
@@ -23,10 +24,10 @@
   <main>
     <p id="notice" class="field-note" role="status" hidden></p>
     <section id="dashboard" hidden>
-      <div class="intro"><div><h1>K1 验收</h1><p>提交版本日或功能分支验收，查看队列与执行进度。</p></div></div>
-      <div class="layout">
+      <div class="page-intro"><div><h1>运行队列</h1><p id="counts" class="sub"></p></div><button id="newJob" type="button" class="primary">＋ 新建验收</button></div>
+      <dialog id="jobDialog" aria-label="新建验收">
         <form id="submitForm" class="card config">
-          <h2>验收配置</h2>
+          <div class="title-line"><h2>验收配置</h2><button class="secondary" data-close-dialog type="button">关闭</button></div>
           <fieldset class="mode-select">
             <legend class="legend">验收模式</legend>
             <div class="seg">
@@ -58,15 +59,32 @@
           <div class="field"><label for="node">执行节点</label><select id="node" name="node"></select></div>
           <div class="field"><label for="server">测试服 ID（选填）</label><input id="server" name="server" type="text"></div>
           <div class="field"><label for="notes">验收要求（选填）</label><textarea id="notes" name="notes" maxlength="4000"></textarea></div>
-          <div class="preview"><p>当前为只读链路联调。自动部署、配置转换和进包表回写均关闭。</p></div>
+          <p class="field-note">填写测试服 ID 并选择已启用运行验收的 Mac 节点，可启动 Unity 实测。</p>
           <button class="primary" type="submit">提交验收批次</button>
         </form>
-        <div>
-          <section class="card job-card"><div class="title-line"><h2>运行队列</h2><span id="counts" class="sub"></span></div><div id="queue" class="job-list"></div></section>
-          <section class="card nodes"><div class="title-line"><h2>执行节点</h2><a href="#setup" class="setting-link">管理配置</a></div><ul id="nodes" class="node-list"></ul></section>
-        </div>
-      </div>
+      </dialog>
+      <section class="card job-card">
+        <nav id="queueFilters" aria-label="筛选运行队列">
+          <button type="button" data-filter="all" aria-pressed="true">全部</button>
+          <button type="button" data-filter="running" aria-pressed="false">验收中</button>
+          <button type="button" data-filter="queued" aria-pressed="false">排队中</button>
+          <button type="button" data-filter="done" aria-pressed="false">已结束</button>
+        </nav>
+        <div class="job-columns" aria-hidden="true"><span>任务</span><span>运行进度</span><span>状态</span></div>
+        <div id="queue" class="job-list"></div>
+      </section>
     </section>
+    <dialog id="nodeDialog" aria-label="执行节点">
+      <div class="dialog-head"><h2>执行节点</h2><button class="secondary" data-close-dialog type="button">关闭</button></div>
+      <div class="dialog-content"><a href="#setup" class="setting-link" data-close-dialog>管理配置 →</a><ul id="nodes" class="node-list"></ul></div>
+    </dialog>
+    <dialog id="releaseDialog" aria-label="新版更新">
+      <div class="dialog-head"><h2 id="releaseTitle">新版更新</h2><button class="secondary" data-close-dialog type="button">关闭</button></div>
+      <div class="dialog-content"><p id="releaseNotes"></p>
+        <div class="dialog-line"><span id="browserVersion"></span><button type="button" class="secondary" id="reloadBrowser">刷新到新版</button></div>
+        <ul id="nodeUpdates" class="node-list"></ul>
+      </div>
+    </dialog>
     <section id="setup" class="detail-view" hidden>
       <a class="back" href="#dashboard">← 返回验收台</a>
       <div class="intro"><div><h1>配置向导</h1><p>为执行节点指定本机三端工程目录，并查看依赖检查。</p></div></div>
@@ -94,7 +112,7 @@
     </section>
     <section id="detail" class="detail-view" hidden>
       <a class="back" href="#dashboard">← 返回运行队列</a>
-      <div class="intro"><div><h1 id="detailTitle">验收批次</h1><p id="context"></p></div><span id="state" class="pill"></span></div>
+      <div class="page-intro"><div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div><div class="detail-actions"><span id="state" class="pill"></span><button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button></div></div>
       <section class="card run">
         <h2>运行进度</h2><p class="sub" id="stage"></p>
         <div class="field"><progress id="progress" value="0" max="1"></progress><p id="summary" class="sub"></p></div>
@@ -104,11 +122,15 @@
           <button type="submit" class="secondary">确认结束</button>
         </form>
       </section>
-      <details class="card log"><summary>AI 输出与执行记录</summary><div id="logEntries" role="log" tabindex="0"></div></details>
-      <section class="card list">
+      <section class="card list" id="checklist">
         <div class="list-head"><h2>验收清单</h2></div>
         <div class="table-wrap"><table><thead><tr><th>事项</th><th>结果</th><th>证据</th></tr></thead><tbody id="items"></tbody></table></div>
       </section>
+      <details class="card log" id="logsPanel" open>
+        <summary>AI 输出与执行记录</summary>
+        <label class="log-follow"><input id="followLog" type="checkbox" checked>跟随最新</label>
+        <div id="logEntries" role="log" tabindex="0"></div>
+      </details>
     </section>
   </main>
 </body>

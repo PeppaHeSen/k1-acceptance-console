@@ -17,12 +17,14 @@ from urllib.parse import urlsplit
 import uuid
 
 from k1_sheet import SheetError, Workbook
+from release import MAX_WORKER_BYTES
+from worker import normalize_cases
 
 
 PROJECT = Path(__file__).resolve().parent
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
-EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished",
+EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "case_snapshot",
           "execution_finished", "execution_error"}
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
@@ -83,7 +85,20 @@ class Console:
                     seq INTEGER, kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL,
                     UNIQUE(attempt,seq)
                 );
+                CREATE TABLE IF NOT EXISTS node_releases (
+                    node TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+                    installed TEXT NOT NULL, requested TEXT, error TEXT
+                );
             """)
+        with self.db(write=True) as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+            for field in ("started", "ended"):
+                if field not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {field} REAL")
+            db.execute("""UPDATE jobs SET started=(SELECT MIN(created) FROM events WHERE job=jobs.id)
+                          WHERE started IS NULL AND node IS NOT NULL""")
+            db.execute("""UPDATE jobs SET ended=(SELECT MAX(created) FROM events WHERE job=jobs.id)
+                          WHERE ended IS NULL AND state='done'""")
 
     @contextmanager
     def db(self, write=False):
@@ -99,14 +114,24 @@ class Console:
             connection.close()
 
     def state(self):
+        release = self.release()
         with self.db() as db:
             row = db.execute("SELECT value FROM settings WHERE key='sheets'").fetchone()
             nodes = [self.node(row) for row in db.execute("SELECT * FROM nodes ORDER BY name")]
             jobs = [self.job(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")]
+            versions = {row["node"]: row for row in db.execute("SELECT * FROM node_releases")}
         active = {job["node"] for job in jobs if job["state"] in ("running", "review")}
         for node in nodes:
             node["online"] = node["seen"] >= time.time() - HEARTBEAT_TIMEOUT
             node["busy"] = node["id"] in active
+            version = versions.get(node["id"])
+            if version:
+                node["update_supported"] = True
+                if release:
+                    target = release["worker_sha256"]
+                    node["update"] = ("installed" if version["installed"] == target else
+                                      "failed" if version["requested"] == target and version["error"] else
+                                      "requested" if version["requested"] == target else "available")
         for job in jobs:
             if job["state"] == "queued":
                 peers = [node for node in nodes if (not job["assigned"] or job["assigned"] == node["id"])
@@ -122,7 +147,8 @@ class Console:
             elif job["state"] == "running" and not any(n["id"] == job["node"] and n["online"] for n in nodes):
                 job["state"] = "disconnected"
         return {"sheets": json.loads(row["value"]) if row else {"items": [], "time": None},
-                "nodes": nodes, "jobs": jobs, "profile": self.config.get("profile", "integration")}
+                "nodes": nodes, "jobs": jobs, "profile": self.config.get("profile", "integration"),
+                "release": release}
 
     @staticmethod
     def node(row):
@@ -132,7 +158,8 @@ class Console:
 
     @staticmethod
     def job(row):
-        return {key: row[key] for key in ("id", "created", "assigned", "node", "attempt", "state", "stage")} | {
+        return {key: row[key] for key in ("id", "created", "assigned", "node", "attempt", "state", "stage",
+                                         "started", "ended")} | {
             "config": json.loads(row["config"]), "items": json.loads(row["items"]),
         }
 
@@ -141,6 +168,60 @@ class Console:
         with self.db(write=True) as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES ('sheets', ?)", (packed(result),))
         return result
+
+    @property
+    def releases(self):
+        return Path(self.database).resolve().parent / "releases"
+
+    def release(self):
+        manifest = self.releases / "current.json"
+        try:
+            current = json.loads(manifest.read_text(encoding="utf-8"))
+            return current if current["version"] == (PROJECT / "VERSION").read_text(encoding="ascii").strip() else None
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def pending_update(db, node, release):
+        if not release:
+            return None
+        row = db.execute("SELECT installed,requested,error FROM node_releases WHERE node=?", (node,)).fetchone()
+        if row and row["requested"] == release["worker_sha256"] and row["requested"] != row["installed"] and not row["error"]:
+            return release
+        return None
+
+    def request_update(self, node, body):
+        release = self.release()
+        if not release or bounded(body, "target", 64) != release["worker_sha256"]:
+            raise ApiError(409, "发布版本已变化，请刷新后重试。")
+        with self.db(write=True) as db:
+            status = db.execute("SELECT installed FROM node_releases WHERE node=?", (node,)).fetchone()
+            if not status:
+                raise ApiError(409, "该节点尚未启用自动更新。")
+            if status["installed"] != release["worker_sha256"]:
+                db.execute("UPDATE node_releases SET requested=?,error=NULL WHERE node=?",
+                           (release["worker_sha256"], node))
+        return {"requested": True}
+
+    def update_package(self, node, body):
+        release = self.release()
+        with self.db() as db:
+            if not self.pending_update(db,node["id"],release) or bounded(body,"target",64) != release["worker_sha256"]:
+                raise ApiError(409, "更新请求已失效。")
+            if db.execute("SELECT 1 FROM jobs WHERE node=? AND state IN ('running','review')", (node["id"],)).fetchone():
+                raise ApiError(409, "节点仍有验收任务。")
+        sha = release["worker_sha256"]
+        data = (self.releases / f"{sha}.py").read_bytes()
+        if not 0 < len(data) <= MAX_WORKER_BYTES or hashlib.sha256(data).hexdigest() != sha:
+            raise ApiError(503, "更新文件校验失败。")
+        return {"worker": base64.b64encode(data).decode("ascii")}
+
+    def update_failed(self, node, body):
+        target = bounded(body,"target",64)
+        with self.db(write=True) as db:
+            db.execute("UPDATE node_releases SET error='failed' WHERE node=? AND requested=?",
+                       (node["id"], target))
+        return {"recorded":True}
 
     def create_node(self, body):
         name, os_name = bounded(body, "name", 60), bounded(body, "os", 12)
@@ -304,6 +385,7 @@ class Console:
         if (not isinstance(caps, list) or any(not isinstance(cap, str) or cap not in METHODS for cap in caps)
                 or not isinstance(checks, list) or len(checks) > 35 or any(not isinstance(c, dict) for c in checks)):
             raise ApiError(400, "节点检查回报格式无效。")
+        release = self.release()
         with self.db(write=True) as db:
             saved = db.execute("SELECT root FROM nodes WHERE id=?", (node["id"],)).fetchone()["root"]
             if body.get("root") != saved or body.get("os") != node["os"] or not saved:
@@ -312,12 +394,22 @@ class Console:
                        (time.time(), packed(caps), packed(checks), node["id"]))
             active = db.execute("SELECT attempt FROM jobs WHERE node=? AND state IN ('running','review')",
                                 (node["id"],)).fetchone()
-        return {"root": saved, "active_attempt": active["attempt"] if active else None}
+            revision = bounded(body, "revision", 64)
+            if revision and not re.fullmatch(r"[a-f0-9]{64}", revision):
+                raise ApiError(400, "节点版本格式无效。")
+            if re.fullmatch(r"[a-f0-9]{64}", revision):
+                db.execute("""INSERT INTO node_releases(node, installed) VALUES(?,?)
+                    ON CONFLICT(node) DO UPDATE SET installed=excluded.installed,
+                    requested=CASE WHEN requested=excluded.installed THEN NULL ELSE requested END,
+                    error=CASE WHEN requested=excluded.installed THEN NULL ELSE error END""", (node["id"], revision))
+            update = self.pending_update(db, node["id"], release) if revision and not active else None
+        return {"root": saved, "active_attempt": active["attempt"] if active else None, "update": update}
 
     def claim(self, node):
+        release = self.release()
         with self.db(write=True) as db:
             node = db.execute("SELECT * FROM nodes WHERE id=?", (node["id"],)).fetchone()
-            if node["seen"] < time.time() - HEARTBEAT_TIMEOUT or not node["root"]:
+            if node["seen"] < time.time() - HEARTBEAT_TIMEOUT or not node["root"] or self.pending_update(db,node["id"],release):
                 return {"job": None}
             if db.execute("SELECT 1 FROM jobs WHERE node=? AND state IN ('running','review')", (node["id"],)).fetchone():
                 return {"job": None}
@@ -327,8 +419,8 @@ class Console:
                 if config["method"] not in caps or config["os"] and config["os"] != node["os"]:
                     continue
                 attempt = uuid.uuid4().hex
-                db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=? WHERE id=?",
-                           (node["id"], attempt, "节点已接单", row["id"]))
+                db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=? WHERE id=?",
+                           (node["id"], attempt, "节点已接单", time.time(), row["id"]))
                 job = self.job(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
                 return {"job": job, "root": node["root"]}
         return {"job": None}
@@ -359,6 +451,14 @@ class Console:
                 if not item or "result" in item or payload.get("result") not in RESULTS or not payload.get("evidence"):
                     raise ApiError(409, "该条目无法写入重复结果或缺少证据。")
                 item.update(result=payload["result"], evidence=payload["evidence"])
+            elif kind == "case_snapshot":
+                item = next((it for it in items if it["key"] == payload.get("key")), None)
+                if not item or "result" in item:
+                    raise ApiError(409, "该事项无法更新用例清单。")
+                try:
+                    item["cases"] = normalize_cases(payload.get("cases"))
+                except ValueError as error:
+                    raise ApiError(400, str(error)) from error
             elif kind == "execution_error":
                 state, stage = "review", "执行待核对"
             elif kind == "execution_finished":
@@ -367,8 +467,8 @@ class Console:
                 state, stage = "done", "批次结束"
             db.execute("INSERT INTO events(job,attempt,seq,kind,payload,created) VALUES (?,?,?,?,?,?)",
                        (row["id"], attempt, seq, kind, value, time.time()))
-            db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=? WHERE id=?",
-                       (seq, packed(items), stage, state, row["id"]))
+            db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=?,ended=? WHERE id=?",
+                       (seq, packed(items), stage, state, time.time() if state=="done" else None, row["id"]))
             return {"ack": seq}
 
     def events(self, job, cursor):
@@ -393,8 +493,8 @@ class Console:
             for item in items:
                 if "result" not in item:
                     item.update(result="error", evidence={"reason": reason})
-            db.execute("UPDATE jobs SET items=?,state='done',stage='人工确认结束' WHERE id=?",
-                       (packed(items), job_id))
+            db.execute("UPDATE jobs SET items=?,state='done',stage='人工确认结束',ended=? WHERE id=?",
+                       (packed(items), time.time(), job_id))
             db.execute("INSERT INTO events(job,kind,payload,created) VALUES (?,?,?,?)",
                        (job_id, "operator_closed", packed({"text": reason, "operator": self.config["operator"]}), time.time()))
         return {"closed": True}
@@ -418,7 +518,8 @@ class Handler(BaseHTTPRequestHandler):
                 node = self.app.agent(self.headers.get("X-Node-ID", ""),
                                       self.headers.get("Authorization", "").removeprefix("Bearer "))
                 action = {"/api/agent/heartbeat": self.app.heartbeat, "/api/agent/claim": lambda n, _: self.app.claim(n),
-                          "/api/agent/event": self.app.event}.get(path)
+                          "/api/agent/event": self.app.event, "/api/agent/update": self.app.update_package,
+                          "/api/agent/update-failed": self.app.update_failed}.get(path)
                 if not action:
                     raise ApiError(404, "接口不存在。")
                 self.json_response(200, action(node, self.body()))
@@ -484,7 +585,10 @@ class Handler(BaseHTTPRequestHandler):
                 "/": ("web/index.html", "text/html"), "/app.js": ("web/app.js", "text/javascript"),
                 "/styles.css": ("web/styles.css", "text/css"), "/demo": ("public/index.html", "text/html"),
             }[path]
-            self.respond(200, (PROJECT / file).read_bytes(), kind + "; charset=utf-8")
+            data = (PROJECT / file).read_bytes()
+            if path == "/":
+                data = data.replace(b"__K1_VERSION__", (PROJECT / "VERSION").read_bytes().strip())
+            self.respond(200, data, kind + "; charset=utf-8")
         else:
             raise ApiError(404, "页面不存在。")
 
@@ -499,6 +603,8 @@ class Handler(BaseHTTPRequestHandler):
             result = self.app.close_review(int(match[1]), body)
         elif match := re.fullmatch(r"/api/nodes/([a-f0-9]{32})/setup", path):
             result = self.app.configure_node(match[1], body)
+        elif match := re.fullmatch(r"/api/nodes/([a-f0-9]{32})/update", path):
+            result = self.app.request_update(match[1], body)
         else:
             raise ApiError(404, "接口不存在。")
         self.json_response(200, result)

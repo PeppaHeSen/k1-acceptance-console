@@ -37,11 +37,13 @@ python3 worker.py --config <节点运行目录>/node.json
 
 执行程序会自动识别 macOS / Windows，把配对结果写入本机 `node.json`。将该文件保留在原节点的私有运行目录中，供重启后继续使用。网页中的操作员名称用于记录操作，按 IP 登记节点适用于可信内网。
 
-## Mac Unity 分支验收
+## Mac Unity 运行验收
 
-在有桌面登录会话的 Mac 节点上启用。首次部署加入 `--unity-runtime`，已有节点在本机 `node.json` 中设置 `"unity_runtime": true` 后重启 Worker。网页提交时选择分支验收、Unity、该 Mac 节点和现有测试服 ID。
+在有桌面登录会话的 Mac 节点上启用。首次部署加入 `--unity-runtime`，已有节点在本机 `node.json` 中设置 `"unity_runtime": true` 后重启 Worker。网页提交分支或版本日验收时，选择 Unity、该 Mac 节点和现有测试服 ID。
 
 把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
+
+Agent 接单后先根据 Jira、需求文档和目标提交列出用例，再按 `runtime.json` 的 `cases_file` 路径原子写入清单。单事项可写用例数组。多事项用对象保存，键取 `runtime.json` 中每个事项的 `key`，值为各自的用例数组。每个用例填写稳定的 `id`、`title`、`state` 和可选的 `evidence`，状态支持 `pending`、`running`、`pass`、`fail`、`blocked`、`confirm`。每完成一条用例就更新该文件，Worker 会把进度同步到网页。
 
 实测结束后，在 `runtime.json` 同一目录原子写入 `result.json`，然后关闭本批次的 Unity Editor。回执须包含以下字段，实际回执填写完整提交和证据位置。
 
@@ -56,6 +58,12 @@ python3 worker.py --config <节点运行目录>/node.json
 ```
 
 `result` 支持 `pass`、`fail`、`blocked`。请在回执中记录实际测试角色和各项观察，便于复核。编辑器退出后，Worker 还原验收产生的跟踪文件改动并切回原分支，再校验回执并更新批次。Worker 异常退出时，确认该工程的 Unity 已关闭，按 `workspace.json` 还原跟踪文件并切回原分支和提交，核对后结束待核对批次。
+
+多事项批次在回执顶层保留 `server` 和 `client`，另设 `items` 对象。该对象以事项 `key` 为键，每项分别填 `result`、`reason` 和 `evidence`。
+
+## 发布与更新
+
+使用仓库的 [k1-console-release 技能](.agents/skills/k1-console-release/SKILL.md) 发布。升级主节点时将后端、HTTPS 入口、`VERSION` 和网页资源部署为同一版本。如果当前 HTTPS 入口单独存放，重启时从这版源目录运行 `lan.py`，沿用既有证书与运行配置。执行节点首次升级到支持更新的 Worker 后，后续可点网页上的「更新并重启」。
 
 ## 交付前核对
 
