@@ -70,7 +70,8 @@ function retentionEffect() {
 }
 
 async function api(path, body) {
-  const result = await fetch("/api/" + path, body === undefined ? {signal:AbortSignal.timeout(8000)} : {
+  // Skip the browser's HTTP cache even when another tab is polling the same URL.
+  const result = await fetch("/api/" + path, body === undefined ? {cache:"no-store", signal:AbortSignal.timeout(8000)} : {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
   });
   if (result.status === 401) throw new Error("请先登录验收台。");
@@ -636,7 +637,7 @@ renderRoute();
 refreshState();
 setInterval(refreshState,3000);
 setInterval(tick,1000);
-fetch("/operator").then(response => response.ok ? response.json() : {}).then(({name}) => {
+fetch("/operator",{cache:"no-store"}).then(response => response.ok ? response.json() : {}).then(({name}) => {
   if (name) {
     set("switchOperator",name + " · 切换");
     byId("operatorSession").hidden = false;
