@@ -19,6 +19,56 @@ const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour
 const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
 let queueFilter = "all";
+let queueSnapshot;
+const appearance = matchMedia("(prefers-color-scheme: dark)");
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+const transparency = byId("glassTransparency");
+const themeChoices = [...document.querySelectorAll('input[name="theme"]')];
+const settingsPages = {settingsHome:"设置",appearanceSettings:"外观",retentionForm:"任务保留"};
+let settingsPage = "settingsHome";
+let pageMotion;
+
+function animatePage(page, returning) {
+  pageMotion?.cancel();
+  if (reducedMotion.matches || !page.animate) return;
+  pageMotion = page.animate([
+    {translate:(returning ? "-14px" : "14px")+" 0",opacity:.68},
+    {translate:"0 0",opacity:1}
+  ],{duration:260,easing:"cubic-bezier(.22,1,.36,1)"});
+}
+
+function renderAppearance() {
+  const selected = themeChoices.find(input=>input.checked);
+  document.documentElement.dataset.resolvedTheme = selected.value==="system"
+    ? (appearance.matches ? "dark" : "light") : selected.value;
+  document.documentElement.style.setProperty("--glass-opacity",(100-transparency.valueAsNumber)+"%");
+  byId("glassValue").value = transparency.value+"%";
+  set("themeSummary",selected.labels[0].textContent.trim());
+}
+
+function showSettings(page, focus = byId("settingsTitle")) {
+  const changed = settingsPage !== page;
+  settingsPage = page;
+  for (const key of Object.keys(settingsPages)) byId(key).hidden = key !== page;
+  byId("settingsBack").hidden = page === "settingsHome";
+  set("settingsTitle",settingsPages[page]);
+  if (byId("settingsDialog").open) {
+    focus.focus({preventScroll:true});
+    if (changed) animatePage(byId(page),page==="settingsHome");
+  }
+}
+
+function settingsBack() {
+  showSettings("settingsHome",byId(settingsPage==="appearanceSettings" ? "appearanceButton" : "retentionButton"));
+}
+
+function retentionEffect() {
+  const input = byId("retentionLimit");
+  const removed = input.validity.valid ? Math.max(0,(view.retention?.completed || 0)-input.valueAsNumber) : 0;
+  set("retentionEffect",removed ? `保存后将删除最早完成的 ${removed} 条任务。` : "");
+  set("saveRetention",removed ? "保存并清理" : "保存");
+  return removed;
+}
 
 async function api(path, body) {
   const result = await fetch("/api/" + path, body === undefined ? {} : {
@@ -26,7 +76,7 @@ async function api(path, body) {
   });
   if (result.status === 401) throw new Error("请先登录验收台。");
   const data = await result.json();
-  if (!result.ok) throw new Error(data.error || "操作失败。");
+  if (!result.ok) throw Object.assign(new Error(data.error || "操作失败。"), {status:result.status});
   return data;
 }
 
@@ -76,14 +126,23 @@ function completion(job) {
 }
 
 function setProgress(bar, counts) {
+  bar.classList.toggle("unknown",!counts);
   if (!counts) {
-    bar.removeAttribute("value");
-    bar.classList.add("unknown");
+    bar.removeAttribute("aria-valuenow");
+    bar.removeAttribute("aria-valuemax");
+    bar.style.removeProperty("--progress");
+    bar.setAttribute("aria-valuetext","进度待确认");
     return;
   }
-  bar.max = Math.max(1,counts[1]);
-  bar.value = counts[0];
-  bar.classList.remove("unknown");
+  bar.removeAttribute("aria-valuetext");
+  bar.setAttribute("aria-valuemax",Math.max(1,counts[1]));
+  bar.setAttribute("aria-valuenow",counts[0]);
+  bar.style.setProperty("--progress",100*counts[0]/Math.max(1,counts[1])+"%");
+}
+
+function followLatest() {
+  const entries = byId("logEntries");
+  if (byId("followLog").checked && !entries.hidden) entries.scrollTop = entries.scrollHeight;
 }
 
 function nodeName(id) {
@@ -136,6 +195,10 @@ async function refreshState() {
     }
     renderDashboard();
     renderSetup();
+    if (view.retention) {
+      set("retentionSummary",`最多 ${view.retention.limit} 条`);
+      if (settingsPage==="retentionForm" && byId("settingsDialog").open) retentionEffect();
+    }
     if (jobView) await refreshJob(jobView, detailGeneration);
     else renderRoute();
   } catch (error) { message(error.message); }
@@ -150,6 +213,25 @@ function renderDashboard() {
   nodeOptions();
   const jobs = view.jobs.filter(job=>queueFilter==="all" || (queueFilter==="running" ?
     ["running","review","disconnected"].includes(job.state) : job.state===queueFilter));
+  const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
+    job.config.sheet_name,job.config.method,job.config.server,nodeName(job.node || job.assigned),
+    job.started,job.ended,job.waiting || job.stage,completion(job)]));
+  if (snapshot!==queueSnapshot) {
+    queueSnapshot = snapshot;
+    renderQueue(jobs);
+  }
+  byId("nodes").replaceChildren(...view.nodes.map(node => {
+    const row = document.createElement("li");
+    const title = document.createElement("strong");
+    title.textContent = `${node.name} · ${node.os}`;
+    row.append(title, label(nodeStatus(node),node.capabilities.length ? "pass" : "review"));
+    return row;
+  }));
+  renderRelease();
+  tick();
+}
+
+function renderQueue(jobs) {
   byId("queue").replaceChildren(...jobs.map(job => {
     const row = document.createElement("a");
     row.href = `#batch-${job.id}`;
@@ -174,10 +256,18 @@ function renderDashboard() {
       count.textContent = counts[0]+" / "+counts[1];
       stage.append(count);
     }
-    const progress = document.createElement("progress");
-    progress.setAttribute("aria-label","验收进度");
-    setProgress(progress,counts);
-    phase.append(stage,progress);
+    phase.append(stage);
+    if (job.state!=="queued") {
+      const progress = document.createElement("div");
+      progress.className = "track";
+      progress.setAttribute("role","progressbar");
+      progress.setAttribute("aria-label",`批次 #${job.id} 验收进度`);
+      const fill = document.createElement("span");
+      fill.className = "track-fill";
+      progress.append(fill);
+      setProgress(progress,counts);
+      phase.append(progress);
+    }
     const open = document.createElement("span");
     open.className = "job-open";
     open.textContent = "详情 →";
@@ -185,15 +275,6 @@ function renderDashboard() {
     return row;
   }));
   if (!jobs.length) set("queue","暂无符合条件的批次");
-  byId("nodes").replaceChildren(...view.nodes.map(node => {
-    const row = document.createElement("li");
-    const title = document.createElement("strong");
-    title.textContent = `${node.name} · ${node.os}`;
-    row.append(title, label(nodeStatus(node),node.capabilities.length ? "pass" : "review"));
-    return row;
-  }));
-  renderRelease();
-  tick();
 }
 
 function renderRelease() {
@@ -282,7 +363,9 @@ async function refreshJob(id, generation) {
     byId("state").replaceChildren(jobStatus(job));
     set("stage",job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
-    setProgress(byId("progress"),completion(job));
+    const counts = completion(job);
+    setProgress(byId("progress"),counts);
+    set("progressCount",counts ? `${counts[0]} / ${counts[1]} ${counts[2]}` : "进度待确认");
     set("summary",Object.entries(resultNames).map(([key,name]) =>
       `${name} ${job.items.filter(item => item.result === key).length}`).join(" · ") + " · 未回写");
     const expanded = new Set([...byId("items").querySelectorAll("details[open]")].map(details=>details.dataset.item));
@@ -313,16 +396,29 @@ async function refreshJob(id, generation) {
       return row;
     }));
     tick();
-  } catch(error) { message(error.message); }
+  } catch(error) {
+    if (generation !== detailGeneration) return;
+    if (error.status===404) location.hash = "#dashboard";
+    message(error.message);
+  }
 }
 
-function renderRoute() {
+function renderRoute(navigating = false) {
   const id = /^#batch-(\d+)$/.exec(location.hash)?.[1];
   const setup = location.hash === "#setup";
+  const page = byId(id ? "detail" : setup ? "setup" : "dashboard");
+  const changed = page.hidden || id !== jobView;
   document.body.classList.toggle("view-detail",Boolean(id));
   byId("dashboard").hidden = Boolean(id) || setup;
   byId("setup").hidden = !setup;
   byId("detail").hidden = !id;
+  if (navigating && changed) {
+    window.scrollTo(0,0);
+    const heading = page.querySelector("h1");
+    heading.tabIndex = -1;
+    heading.focus({preventScroll:true});
+    animatePage(page,!id && !setup);
+  }
   if (id === jobView) return;
   jobView = id;
   detailGeneration += 1;
@@ -332,16 +428,20 @@ function renderRoute() {
   if (!id) return;
   const generation = detailGeneration;
   refreshJob(id,generation);
+  let live = false;
   stream = new EventSource(`/api/jobs/${id}/events`);
+  stream.onopen = () => { live = false; };
+  stream.addEventListener("live",()=>{ live = true; });
   stream.onmessage = event => {
     if (generation !== detailGeneration || logs.has(event.lastEventId)) return;
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
     const line = document.createElement("div");
-    line.className = "entry";
+    line.className = live && !reducedMotion.matches ? "entry is-new" : "entry";
     const stamp = document.createElement("time");
     stamp.textContent = clockTime(data.created);
+    stamp.dateTime = new Date(data.created*1000).toISOString();
     const kind = document.createElement("span");
     kind.textContent = data.kind==="ai_output" ? "AI" : "节点";
     const content = document.createElement("p");
@@ -353,7 +453,7 @@ function renderRoute() {
       : `${payload.key || ""} ${resultNames[payload.result] || ""}`.trim() || data.kind);
     line.append(stamp,kind,content);
     byId("logEntries").append(line);
-    if (byId("followLog").checked) byId("logEntries").scrollTop = byId("logEntries").scrollHeight;
+    followLatest();
   };
 }
 
@@ -374,6 +474,65 @@ for (const [button,dialog] of [["online","nodeDialog"],["newJob","jobDialog"],["
   byId(button).addEventListener("click",()=>byId(dialog).showModal());
 }
 document.querySelectorAll("[data-close-dialog]").forEach(element=>element.addEventListener("click",()=>element.closest("dialog").close()));
+try {
+  const selected = themeChoices.find(input=>input.value===localStorage.getItem("k1-theme"));
+  if (selected) selected.checked = true;
+  const value = localStorage.getItem("k1-glass-transparency");
+  if (value !== null) transparency.value = value;
+} catch {}
+renderAppearance();
+appearance.addEventListener("change",renderAppearance);
+reducedMotion.addEventListener("change",()=>{
+  if (reducedMotion.matches) pageMotion?.cancel();
+});
+byId("appearanceSettings").addEventListener("input",()=>{
+  renderAppearance();
+  try {
+    localStorage.setItem("k1-theme",themeChoices.find(input=>input.checked).value);
+    localStorage.setItem("k1-glass-transparency",transparency.value);
+  } catch {}
+});
+byId("settingsButton").addEventListener("click",()=>{
+  showSettings("settingsHome");
+  byId("settingsDialog").showModal();
+  byId("settingsTitle").focus();
+});
+byId("settingsBack").addEventListener("click",settingsBack);
+byId("cancelRetention").addEventListener("click",settingsBack);
+byId("appearanceButton").addEventListener("click",()=>showSettings("appearanceSettings"));
+byId("settingsDialog").addEventListener("cancel",event=>{
+  if (settingsPage==="settingsHome") return;
+  event.preventDefault();
+  settingsBack();
+});
+byId("retentionButton").addEventListener("click",()=>{
+  const input = byId("retentionLimit");
+  input.value = view.retention?.limit ?? 100;
+  set("retentionError","");
+  retentionEffect();
+  showSettings("retentionForm",input);
+  input.select();
+});
+byId("retentionLimit").addEventListener("input",retentionEffect);
+byId("retentionForm").addEventListener("submit",async event=>{
+  event.preventDefault();
+  const button = byId("saveRetention");
+  const input = byId("retentionLimit");
+  const expected = retentionEffect();
+  button.disabled = input.disabled = true;
+  set("retentionError","");
+  try {
+    const result = await api("settings/retention",{limit:input.valueAsNumber,expected_deleted:expected});
+    if (byId("settingsDialog").open && settingsPage==="retentionForm") settingsBack();
+    await refreshState();
+    if (result.removed) message(`已清理最早完成的 ${result.removed} 条任务。`);
+  } catch (error) {
+    set("retentionError",error.message);
+    await refreshState();
+  } finally {
+    button.disabled = input.disabled = false;
+  }
+});
 byId("reloadBrowser").addEventListener("click",()=>location.reload());
 byId("queueFilters").addEventListener("click",event=>{
   const button = event.target.closest("button[data-filter]");
@@ -388,10 +547,22 @@ byId("summaryToggle").addEventListener("click",event=>{
   button.setAttribute("aria-pressed",String(limited));
   button.textContent = limited ? "显示全部详情" : "仅看进度";
   byId("checklist").hidden = byId("logsPanel").hidden = limited;
+  if (!limited) followLatest();
 });
-byId("followLog").addEventListener("change",event=>{
-  if (event.target.checked) byId("logEntries").scrollTop = byId("logEntries").scrollHeight;
+byId("followLog").addEventListener("change",followLatest);
+byId("logToggle").addEventListener("click",event=>{
+  const entries = byId("logEntries");
+  const expanded = entries.hidden;
+  event.currentTarget.setAttribute("aria-expanded",String(expanded));
+  byId("logsPanel").classList.toggle("collapsed",!expanded);
+  entries.hidden = !expanded;
+  if (expanded) followLatest();
 });
+for (const name of ["animationend","animationcancel"]) {
+  byId("logEntries").addEventListener(name,event=>{
+    if (event.animationName==="log-highlight") event.target.classList.remove("is-new");
+  });
+}
 window.addEventListener("hashchange",renderRoute);
 byId("setupNode").addEventListener("change",renderSetup);
 byId("refresh").addEventListener("click",async event => {

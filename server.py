@@ -29,6 +29,7 @@ EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "c
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
+DEFAULT_COMPLETED_LIMIT = 100
 LAN_NETWORKS = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
 
 
@@ -85,6 +86,11 @@ class Console:
                     seq INTEGER, kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL,
                     UNIQUE(attempt,seq)
                 );
+                CREATE INDEX IF NOT EXISTS events_by_job ON events(job,id);
+                CREATE TABLE IF NOT EXISTS retired_jobs (
+                    id INTEGER PRIMARY KEY, request TEXT UNIQUE NOT NULL,
+                    attempt TEXT UNIQUE, node TEXT, last_seq INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS node_releases (
                     node TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
                     installed TEXT NOT NULL, requested TEXT, error TEXT
@@ -99,6 +105,9 @@ class Console:
                           WHERE started IS NULL AND node IS NOT NULL""")
             db.execute("""UPDATE jobs SET ended=(SELECT MAX(created) FROM events WHERE job=jobs.id)
                           WHERE ended IS NULL AND state='done'""")
+            db.execute("""INSERT OR IGNORE INTO settings(key,value)
+                          SELECT 'completed_limit', MAX(?,COUNT(*)) FROM jobs WHERE state='done'""",
+                       (DEFAULT_COMPLETED_LIMIT,))
 
     @contextmanager
     def db(self, write=False):
@@ -118,7 +127,8 @@ class Console:
         with self.db() as db:
             row = db.execute("SELECT value FROM settings WHERE key='sheets'").fetchone()
             nodes = [self.node(row) for row in db.execute("SELECT * FROM nodes ORDER BY name")]
-            jobs = [self.job(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")]
+            completed_limit = self.completed_limit(db)
+            jobs = [self.job(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC")]
             versions = {row["node"]: row for row in db.execute("SELECT * FROM node_releases")}
         active = {job["node"] for job in jobs if job["state"] in ("running", "review")}
         for node in nodes:
@@ -148,7 +158,35 @@ class Console:
                 job["state"] = "disconnected"
         return {"sheets": json.loads(row["value"]) if row else {"items": [], "time": None},
                 "nodes": nodes, "jobs": jobs, "profile": self.config.get("profile", "integration"),
-                "release": release}
+                "release": release, "retention": {"limit": completed_limit,
+                    "completed": sum(job["state"] == "done" for job in jobs)}}
+
+    @staticmethod
+    def completed_limit(db):
+        return int(db.execute("SELECT value FROM settings WHERE key='completed_limit'").fetchone()["value"])
+
+    def prune_completed(self, db, limit):
+        oldest = """SELECT id FROM jobs WHERE state='done'
+                    ORDER BY COALESCE(ended,created) DESC,id DESC LIMIT -1 OFFSET ?"""
+        db.execute(f"""INSERT INTO retired_jobs(id,request,attempt,node,last_seq)
+                       SELECT id,request,attempt,node,last_seq FROM jobs WHERE id IN ({oldest})""", (limit,))
+        db.execute(f"DELETE FROM events WHERE job IN ({oldest})", (limit,))
+        db.execute(f"DELETE FROM jobs WHERE id IN ({oldest})", (limit,))
+
+    def set_retention(self, body):
+        limit = body.get("limit")
+        if type(limit) is not int or not 1 <= limit <= (1 << 53) - 1:
+            raise ApiError(400, "请输入至少为 1 的整数。")
+        with self.db(write=True) as db:
+            count = db.execute("SELECT COUNT(*) FROM jobs WHERE state='done'").fetchone()[0]
+            removed = max(0, count - limit)
+            expected = body.get("expected_deleted")
+            if type(expected) is not int or expected != removed:
+                raise ApiError(409, "已完成任务数量已变化，请核对清理数量后重试。")
+            db.execute("UPDATE settings SET value=? WHERE key='completed_limit'", (limit,))
+            if removed:
+                self.prune_completed(db, limit)
+        return {"limit": limit, "completed": count - removed, "removed": removed}
 
     @staticmethod
     def node(row):
@@ -311,6 +349,8 @@ class Console:
             row = db.execute("SELECT id,request_body FROM jobs WHERE request=?", (request,)).fetchone()
             if row and row["request_body"] != signature:
                 raise ApiError(409, "提交标识已用于不同的参数。")
+            if not row and db.execute("SELECT 1 FROM retired_jobs WHERE request=?", (request,)).fetchone():
+                raise ApiError(410, "此批次已按保留设置清理。")
             return {"id": row["id"]} if row else None
 
         with self.db() as db:
@@ -355,10 +395,10 @@ class Console:
                 row = db.execute("SELECT os FROM nodes WHERE id=?", (assigned,)).fetchone()
                 if not row or config["os"] and row["os"] != config["os"]:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
-            job = db.execute(
-                "INSERT INTO jobs(request,request_body,config,items,created,assigned) VALUES (?,?,?,?,?,?)",
-                (request, signature, packed(config), packed(items), time.time(), assigned),
-            )
+            job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned)
+                SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),
+                           COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?""",
+                (request, signature, packed(config), packed(items), time.time(), assigned))
             return {"id": job.lastrowid}
 
     def detail(self, job_id):
@@ -434,6 +474,10 @@ class Console:
         with self.db(write=True) as db:
             row = db.execute("SELECT * FROM jobs WHERE attempt=? AND node=?", (attempt, node["id"])).fetchone()
             if not row:
+                retired = db.execute("SELECT last_seq FROM retired_jobs WHERE attempt=? AND node=?",
+                                     (attempt, node["id"])).fetchone()
+                if retired and seq <= retired["last_seq"]:
+                    return {"ack": retired["last_seq"]}
                 raise ApiError(403, "执行尝试不属于该节点。")
             previous = db.execute("SELECT kind,payload FROM events WHERE attempt=? AND seq=?", (attempt, seq)).fetchone()
             if previous:
@@ -469,12 +513,18 @@ class Console:
                        (row["id"], attempt, seq, kind, value, time.time()))
             db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=?,ended=? WHERE id=?",
                        (seq, packed(items), stage, state, time.time() if state=="done" else None, row["id"]))
+            if state == "done":
+                self.prune_completed(db, self.completed_limit(db))
             return {"ack": seq}
 
     def events(self, job, cursor):
         with self.db() as db:
             return [dict(row) for row in db.execute(
                 "SELECT id,kind,payload,created FROM events WHERE job=? AND id>? ORDER BY id LIMIT 250", (job, cursor))]
+
+    def latest_event(self, job):
+        with self.db() as db:
+            return db.execute("SELECT COALESCE(MAX(id),0) FROM events WHERE job=?", (job,)).fetchone()[0]
 
     def close_review(self, job_id, body):
         reason = bounded(body, "reason", 500)
@@ -497,6 +547,7 @@ class Console:
                        (packed(items), time.time(), job_id))
             db.execute("INSERT INTO events(job,kind,payload,created) VALUES (?,?,?,?)",
                        (job_id, "operator_closed", packed({"text": reason, "operator": self.config["operator"]}), time.time()))
+            self.prune_completed(db, self.completed_limit(db))
         return {"closed": True}
 
 
@@ -595,6 +646,8 @@ class Handler(BaseHTTPRequestHandler):
     def post_action(self, path, body):
         if path == "/api/sheets/refresh":
             result = self.app.refresh()
+        elif path == "/api/settings/retention":
+            result = self.app.set_retention(body)
         elif path == "/api/jobs":
             result = self.app.submit(body)
         elif path == "/api/nodes":
@@ -614,6 +667,7 @@ class Handler(BaseHTTPRequestHandler):
             cursor = max(0, int(self.headers.get("Last-Event-ID", "0")))
         except ValueError as error:
             raise ApiError(400, "无效的日志游标。") from error
+        history_end = self.app.latest_event(job_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -623,16 +677,23 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(8)
         try:
             until = time.monotonic() + 20
+            live = False
             while time.monotonic() < until:
+                if not live and cursor >= history_end:
+                    live = True
+                    self.wfile.write(b"event: live\ndata: {}\n\n")
                 events = self.app.events(job_id, cursor)
-                if events:
-                    for event in events:
-                        cursor = event["id"]
-                        self.wfile.write(f"id: {cursor}\ndata: {packed(event)}\n\n".encode())
-                else:
+                for event in events:
+                    if not live and event["id"] > history_end:
+                        live = True
+                        self.wfile.write(b"event: live\ndata: {}\n\n")
+                    cursor = event["id"]
+                    self.wfile.write(f"id: {cursor}\ndata: {packed(event)}\n\n".encode())
+                if not events:
                     self.wfile.write(b": heartbeat\n\n")
-                    time.sleep(1)
                 self.wfile.flush()
+                if not events:
+                    time.sleep(1)
         except (OSError, TimeoutError):
             pass
 

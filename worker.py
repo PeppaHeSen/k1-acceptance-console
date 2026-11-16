@@ -607,8 +607,10 @@ class Node:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version", version="K1 Worker 0.10.0")
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
     node = Node(json.loads(args.config.read_text(encoding="utf-8")))
     node.pair(args.config.resolve())
+    print("K1 Worker 0.10.0 ready.", flush=True)
     node.run()

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-resolved-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,6 +15,7 @@
       <div class="header-actions">
         <button id="online" class="secondary" type="button" title="查看执行节点"></button>
         <button id="releaseButton" class="secondary" type="button" hidden></button>
+        <button id="settingsButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="settingsDialog"><span aria-hidden="true">⚙</span> 设置</button>
         <form id="operatorSession" method="post" action="/logout" hidden>
           <button id="switchOperator" type="submit" class="secondary" title="切换操作员"></button>
         </form>
@@ -85,8 +86,53 @@
         <ul id="nodeUpdates" class="node-list"></ul>
       </div>
     </dialog>
+    <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+      <div class="dialog-head settings-head">
+        <button type="button" class="secondary round" id="settingsBack" aria-label="返回设置" hidden>‹</button>
+        <h2 id="settingsTitle" tabindex="-1">设置</h2>
+        <button type="button" class="secondary round" data-close-dialog aria-label="关闭设置">×</button>
+      </div>
+      <div class="dialog-content" id="settingsHome">
+        <button class="settings-row" type="button" id="appearanceButton" aria-controls="appearanceSettings">
+          <span class="setting-symbol" aria-hidden="true">◐</span><span>外观</span>
+          <span id="themeSummary" class="sub"></span><span aria-hidden="true">›</span>
+        </button>
+        <button class="settings-row" type="button" id="retentionButton" aria-controls="retentionForm">
+          <span class="setting-symbol archive" aria-hidden="true">▣</span><span>任务保留</span>
+          <span id="retentionSummary" class="sub"></span><span aria-hidden="true">›</span>
+        </button>
+      </div>
+      <div class="dialog-content" id="appearanceSettings" hidden>
+        <fieldset class="theme-options">
+          <legend class="legend">主题</legend>
+          <div class="theme-choices">
+            <label><input name="theme" type="radio" value="system" checked><span class="swatch system"></span>跟随系统</label>
+            <label><input name="theme" type="radio" value="light"><span class="swatch"></span>浅色</label>
+            <label><input name="theme" type="radio" value="dark"><span class="swatch dark"></span>深色</label>
+          </div>
+        </fieldset>
+        <div class="glass-setting">
+          <div class="dialog-line"><label for="glassTransparency">毛玻璃透明度</label><output class="mono sub" for="glassTransparency" id="glassValue">36%</output></div>
+          <input id="glassTransparency" type="range" min="0" max="60" value="36">
+          <div class="dialog-line sub"><span>不透明</span><span>更透明</span></div>
+        </div>
+      </div>
+      <form id="retentionForm" hidden>
+        <div class="dialog-content">
+          <label for="retentionLimit">已完成任务保留上限</label>
+          <div class="number-field"><input id="retentionLimit" name="limit" type="number" min="1" max="9007199254740991" step="1" required aria-describedby="retentionHelp"><span>条</span></div>
+          <p id="retentionHelp" class="sub">超出上限时，按完成时间删除最早的已完成任务及其详情和日志。</p>
+          <p id="retentionEffect" role="status"></p>
+          <p id="retentionError" role="alert"></p>
+        </div>
+        <div class="settings-actions">
+          <button type="button" class="secondary" id="cancelRetention">取消</button>
+          <button type="submit" class="primary" id="saveRetention">保存</button>
+        </div>
+      </form>
+    </dialog>
     <section id="setup" class="detail-view" hidden>
-      <a class="back" href="#dashboard">← 返回验收台</a>
+      <a class="back primary" href="#dashboard"><span aria-hidden="true">‹</span> 返回验收台</a>
       <div class="intro"><div><h1>配置向导</h1><p>为执行节点指定本机三端工程目录，并查看依赖检查。</p></div></div>
       <div class="wizard-layout">
         <div class="card wizard-panel">
@@ -111,11 +157,12 @@
       </div>
     </section>
     <section id="detail" class="detail-view" hidden>
-      <a class="back" href="#dashboard">← 返回运行队列</a>
+      <a class="back primary" href="#dashboard"><span aria-hidden="true">‹</span> 返回运行队列</a>
       <div class="page-intro"><div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div><div class="detail-actions"><span id="state" class="pill"></span><button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button></div></div>
       <section class="card run">
-        <h2>运行进度</h2><p class="sub" id="stage"></p>
-        <div class="field"><progress id="progress" value="0" max="1"></progress><p id="summary" class="sub"></p></div>
+        <div class="title-line"><h2 id="progressTitle">运行进度</h2><span id="progressCount" class="sub mono"></span></div>
+        <p class="sub" id="stage"></p>
+        <div class="field"><div class="track" id="progress" role="progressbar" aria-labelledby="progressTitle"><span class="track-fill"></span></div><p id="summary" class="sub"></p></div>
         <form id="closeReview" class="field" hidden>
           <label for="closeReason">待核对批次的结束原因</label>
           <input id="closeReason" type="text" required maxlength="500">
@@ -126,11 +173,13 @@
         <div class="list-head"><h2>验收清单</h2></div>
         <div class="table-wrap"><table><thead><tr><th>事项</th><th>结果</th><th>证据</th></tr></thead><tbody id="items"></tbody></table></div>
       </section>
-      <details class="card log" id="logsPanel" open>
-        <summary>AI 输出与执行记录</summary>
-        <label class="log-follow"><input id="followLog" type="checkbox" checked>跟随最新</label>
-        <div id="logEntries" role="log" tabindex="0"></div>
-      </details>
+      <section class="card log" id="logsPanel" aria-labelledby="logToggle">
+        <div class="log-header">
+          <h2><button type="button" id="logToggle" aria-expanded="true" aria-controls="logEntries"><span aria-hidden="true">›</span> AI 输出与执行记录</button></h2>
+          <label class="log-follow"><input id="followLog" type="checkbox" checked>跟随最新</label>
+        </div>
+        <div id="logEntries" role="log" aria-label="带时间的执行记录" tabindex="0"></div>
+      </section>
     </section>
   </main>
 </body>
