@@ -39,8 +39,12 @@
           </fieldset>
           <fieldset id="versionFields">
             <div class="field">
-              <div class="field-title"><label for="sheet">进包表页签</label><button id="refresh" class="secondary" type="button">刷新页签</button></div>
-              <select id="sheet" name="sheet" required></select><p id="sheetTime" class="field-note"></p>
+              <label for="sheet">进包表页签</label>
+              <div class="sheet-controls">
+                <select id="sheet" name="sheet" aria-describedby="sheetTime" required></select>
+                <button id="refresh" class="secondary" type="button">刷新页签</button>
+              </div>
+              <p id="sheetTime" class="field-note" role="status"></p>
             </div>
             <div class="field"><label for="releaseBranch">目标分支</label><select id="releaseBranch" name="branch"><option>dev</option><option>qa</option></select></div>
           </fieldset>

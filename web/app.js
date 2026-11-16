@@ -21,6 +21,8 @@ const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
 let queueFilter = "all";
 let queueSnapshot;
+let sheetChoice = "";
+let sheetRefreshError = "";
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const transparency = byId("glassTransparency");
 const themeChoices = [...document.querySelectorAll('input[name="theme"]')];
@@ -182,7 +184,9 @@ async function refreshState() {
   loadingState = true;
   if (!stateReady) byId("retryQueue").disabled = true;
   try {
-    view = await api("state");
+    const next = await api("state");
+    if ((next.sheets.time ?? 0) < (view.sheets.time ?? 0)) next.sheets = view.sheets;
+    view = next;
     if (!location.hash && !view.nodes.some(node => node.root)) location.hash = "#setup";
     if (location.hash === "#setup") {
       try {
@@ -219,9 +223,20 @@ async function refreshState() {
   }
 }
 
+function renderSheets() {
+  const {items, time: refreshedAt} = view.sheets;
+  const select = byId("sheet");
+  choices(select,items.map(sheet=>[sheet.id,sheet.name]),"请选择进包页签");
+  if (!items.some(sheet=>sheet.id===sheetChoice)) sheetChoice = "";
+  const newest = items.filter(sheet=>/^\d+$/.test(sheet.name.trim()))
+    .sort((a,b)=>Number(b.name)-Number(a.name))[0] ?? items[0];
+  select.value = sheetChoice || newest?.id || "";
+  set("sheetTime",byId("refresh").disabled ? "正在读取钉钉进包表…" : sheetRefreshError ||
+    (refreshedAt ? "最近成功刷新 " + time(refreshedAt) : "点击「刷新页签」加载钉钉进包表。"));
+}
+
 function renderDashboard() {
-  choices(byId("sheet"),view.sheets.items.map(sheet => [sheet.id,sheet.name]),"请选择进包页签");
-  set("sheetTime",view.sheets.time ? "最近成功刷新 " + time(view.sheets.time) : "点击「刷新页签」加载钉钉进包表。");
+  renderSheets();
   set("online", `${view.nodes.filter(node => node.online).length} 台节点在线`);
   set("counts", `${view.jobs.filter(job=>job.state==="running").length} 批验收中 · ${view.jobs.filter(job=>job.state==="queued").length} 批排队`);
   nodeOptions();
@@ -373,7 +388,7 @@ async function refreshJob(id, generation) {
     if (generation !== detailGeneration) return;
     set("detailTitle",`验收批次 #${job.id}`);
     set("context",[modeSummary(job.config),job.node_name || "等待节点",
-      job.config.server ? job.config.server + " 服" : ""].filter(Boolean).join(" · "));
+      job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
     set("stage",job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
@@ -572,13 +587,18 @@ for (const name of ["animationend","animationcancel"]) {
 }
 window.addEventListener("hashchange",renderRoute);
 byId("setupNode").addEventListener("change",renderSetup);
+byId("sheet").addEventListener("change",event=>{ sheetChoice = event.target.value; });
 byId("refresh").addEventListener("click",async event => {
   const button = event.currentTarget;
   button.disabled = true;
-  message("正在读取钉钉进包表…");
-  try { await api("sheets/refresh",{}); await refreshState(); message("页签已刷新。"); }
-  catch(error) { message(error.message); }
-  finally { button.disabled = false; }
+  sheetRefreshError = "";
+  renderSheets();
+  try { view.sheets = await api("sheets/refresh",{}); }
+  catch(error) { sheetRefreshError = error.message; }
+  finally {
+    button.disabled = false;
+    renderSheets();
+  }
 });
 action(form,async data => {
   const options = Object.fromEntries(data);
@@ -589,6 +609,8 @@ action(form,async data => {
   }
   const {id} = await api("jobs",{...options,request:submitAttempt.request});
   submitAttempt = null;
+  sheetChoice = "";
+  renderSheets();
   byId("jobDialog").close();
   message(`已提交批次 #${id}。`);
   await refreshState();

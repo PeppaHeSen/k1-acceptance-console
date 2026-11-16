@@ -5,6 +5,7 @@
     --glass-edge: #ffffffb8; --glass-highlight: #fff9; --glass-filter: blur(28px) saturate(145%);
     --track-tint: #627eaf30; --track-highlight: #ffffff24; --progress-blue: #206be2;
     --control: #e8edf58c; --border: #c1cde088; --line: #758aac33;
+    --field-fill: #fff; --field-edge: #a0aec4; --field-placeholder: #525e72;
     --ink: #182131; --muted: #525e72; --accent: #075cd6; --accent-hover: #064eb7;
     --soft-blue: #e9f1ff; --good: #08734e; --soft-green: #e6f6ee; --warn: #8a5410; --soft-warn: #fff2da;
     --console: #f3f8ff; --console-head: #ffffff55;
@@ -19,6 +20,7 @@
     --track-tint: #a0bbf14d; --track-highlight: #e1f5ff33; --progress-blue: #8cd4ff;
     --progress-opacity: calc(55% + var(--glass-opacity) * 0.45);
     --control: #9eb4e020; --border: #9cb5e04d; --line: #b3c8ec25;
+    --field-fill: #344259; --field-edge: #8293af; --field-placeholder: #c2cde0;
     --ink: #f2f5fd; --muted: #b6c1d5; --accent: #75acff; --accent-hover: #9bc3ff;
     --soft-blue: #253858; --good: #83e1b1; --soft-green: #233d36; --warn: #f4cb89; --soft-warn: #42352a;
     --console: #151e2d; --console-head: #a2bdf218;
@@ -54,7 +56,7 @@
   .top, main { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
   .top { min-height: 64px; justify-content: space-between; gap: 12px; }
   .top, .brand, .header-actions, .page-intro, .title-line, .detail-actions,
-  .field-title, .dialog-head, .dialog-line, .log-header, .log-follow { display: flex; align-items: center; }
+  .dialog-head, .dialog-line, .log-header, .log-follow { display: flex; align-items: center; }
   .brand { gap: 10px; white-space: nowrap; font-size: 16px; font-weight: 720; }
   .mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: #075cd6; color: white; font-size: 13px; }
   .header-actions, .detail-actions { gap: 8px; flex-wrap: wrap; }
@@ -64,7 +66,7 @@
   #releaseButton.update-available { background: var(--soft-warn); color: var(--warn); }
 
   main { flex: 1; padding: 24px 0; }
-  .page-intro, .title-line, .field-title, .dialog-head, .dialog-line, .log-header { justify-content: space-between; gap: 10px; }
+  .page-intro, .title-line, .dialog-head, .dialog-line, .log-header { justify-content: space-between; gap: 10px; }
   .page-intro { margin-bottom: 16px; }
   .intro { margin-bottom: 16px; }
   .intro p, .sub, .field-note { color: var(--muted); margin-top: 4px; }
@@ -193,12 +195,13 @@
   label, .legend { display: block; font-weight: 650; font-size: 13px; margin-bottom: 5px; }
   fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
   .field { margin-top: 12px; }
-  .field-title label { margin: 0; }
-  .field-title .secondary { min-height: 29px; }
+  .sheet-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   input[type="text"], input[type="number"], select, textarea {
-    width: 100%; color: var(--ink); background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 7px 9px;
+    width: 100%; min-width: 0; color: var(--ink); background: var(--field-fill);
+    border: 1px solid var(--field-edge); border-radius: 9px; padding: 7px 9px;
   }
+  input::placeholder, textarea::placeholder { color: var(--field-placeholder); opacity: 1; }
   textarea { display: block; resize: vertical; min-height: 65px; }
   .seg, .theme-choices { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 5px; }
   .seg { padding: 4px; border-radius: 11px; background: var(--control); }

@@ -21,7 +21,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 from time import monotonic, time
 from unicodedata import category, normalize
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from server import APPEARANCE_ASSETS, PROJECT, ApiError, Console
 
@@ -254,6 +254,10 @@ class Gateway(BaseHTTPRequestHandler):
             headers = {name: self.headers[name] for name in FORWARDED_HEADERS if name in self.headers}
             if credential:
                 headers["Authorization"] = credential
+            if self.command == "POST" and urlsplit(self.path).path == "/api/jobs":
+                operator = self.server.session(self.session_token())
+                if operator:
+                    headers["X-K1-Operator"] = quote(operator, safe="")
             # Nodes authenticate with a different credential than browser operators.
             if "X-Node-ID" in self.headers:
                 headers["X-Node-ID"] = self.headers["X-Node-ID"]

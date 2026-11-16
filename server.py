@@ -13,7 +13,7 @@ import re
 import secrets
 import sqlite3
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 import uuid
 
 from k1_sheet import SheetError, Workbook
@@ -105,6 +105,8 @@ class Console:
             for field in ("started", "ended"):
                 if field not in columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {field} REAL")
+            if "operator" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN operator TEXT")
             db.execute("""UPDATE jobs SET started=(SELECT MIN(created) FROM events WHERE job=jobs.id)
                           WHERE started IS NULL AND node IS NOT NULL""")
             db.execute("""UPDATE jobs SET ended=(SELECT MAX(created) FROM events WHERE job=jobs.id)
@@ -201,7 +203,7 @@ class Console:
     @staticmethod
     def job(row):
         return {key: row[key] for key in ("id", "created", "assigned", "node", "attempt", "state", "stage",
-                                         "started", "ended")} | {
+                                         "started", "ended", "operator")} | {
             "config": json.loads(row["config"]), "items": json.loads(row["items"]),
         }
 
@@ -343,7 +345,7 @@ class Console:
             db.execute("UPDATE nodes SET root=?, capabilities='[]', checks='[]' WHERE id=?", (root, node_id))
         return {"saved": True}
 
-    def submit(self, body):
+    def submit(self, body, operator=None):
         request = bounded(body, "request", 80)
         if not re.fullmatch(r"[A-Za-z0-9-]{16,80}", request):
             raise ApiError(400, "缺少提交标识。")
@@ -399,10 +401,10 @@ class Console:
                 row = db.execute("SELECT os FROM nodes WHERE id=?", (assigned,)).fetchone()
                 if not row or config["os"] and row["os"] != config["os"]:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
-            job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned)
+            job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
                 SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),
-                           COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?""",
-                (request, signature, packed(config), packed(items), time.time(), assigned))
+                           COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?,?""",
+                (request, signature, packed(config), packed(items), time.time(), assigned, operator))
             return {"id": job.lastrowid}
 
     def detail(self, job_id):
@@ -653,7 +655,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings/retention":
             result = self.app.set_retention(body)
         elif path == "/api/jobs":
-            result = self.app.submit(body)
+            # The loopback gateway attaches the authenticated browser session's name.
+            operator = unquote(self.headers.get("X-K1-Operator", ""))
+            result = self.app.submit(body, operator or None)
         elif path == "/api/nodes":
             result = self.app.create_node(body)
         elif match := re.fullmatch(r"/api/jobs/(\d+)/close", path):
