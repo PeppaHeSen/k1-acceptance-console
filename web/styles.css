@@ -157,15 +157,25 @@
   .list { margin-top: 14px; overflow: hidden; }
   .list-head { padding: 12px 18px; }
   .table-wrap { overflow: auto; }
-  table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-  th, td { padding: 8px 14px 8px 18px; border-top: 1px solid var(--line); }
+  .checklist-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 13px; }
+  .checklist-result { width: 14%; }
+  .checklist-evidence { width: 26%; }
+  th, td { padding: 8px 14px 8px 18px; border-top: 1px solid var(--line); vertical-align: top; }
   th { background: var(--control); color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }
   td:nth-child(2) { white-space: nowrap; }
   td { overflow-wrap: anywhere; }
   td:nth-child(3) { color: var(--muted); }
   summary { cursor: pointer; color: var(--accent); font-weight: 650; }
-  .case-list { max-width: 52ch; margin-top: 5px; }
-  .case-list p { margin: 4px 0; font-size: 12px; }
+  .checklist-item { font-weight: 650; }
+  .checklist-item td:nth-child(3) { font-weight: 400; }
+  .case-toggle { display: flex; align-items: center; gap: 7px; border: 0; padding: 0; margin-top: 4px;
+    background: transparent; color: var(--accent); font-size: 12px; font-weight: 650; }
+  .case-toggle::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
+  .case-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
+  .case-row { background: color-mix(in srgb, var(--control) 40%, transparent); }
+  .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 3px 0 0 14px; }
+  .case-id { color: var(--muted); white-space: nowrap; font-size: 12px; }
   .log {
     --surface: var(--console); display: flex; flex: 1 0 282px; flex-direction: column;
     overflow: hidden; margin-top: 14px; color: var(--console-ink);
@@ -281,5 +291,8 @@
     .log-header { flex-wrap: wrap; }
     .entry { grid-template-columns: 62px 26px minmax(0,1fr); gap: 6px; font-size: 12px; }
     th, td { padding-inline: 9px; }
+    .checklist-result { width: 76px; }
+    .checklist-evidence { width: 23%; }
+    .case-title { grid-template-columns: minmax(0, 1fr); gap: 1px; padding-left: 3px; }
     #settingsDialog { margin: 69px 14px auto auto; }
   }

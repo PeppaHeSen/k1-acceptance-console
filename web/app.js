@@ -14,6 +14,8 @@ let stateReady = false;
 let pairings = [];
 let requestedPairing;
 let detailGeneration = 0;
+let checklistSnapshot = "";
+const expandedCaseGroups = new Map();
 const logs = new Set();
 const time = value => new Date(value * 1000).toLocaleString("zh-CN");
 const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour12:false});
@@ -466,6 +468,58 @@ function renderPairings() {
   }));
 }
 
+function renderChecklist(job) {
+  const snapshot = JSON.stringify(job.items);
+  if (snapshot === checklistSnapshot) return;
+  checklistSnapshot = snapshot;
+  const rows = document.createDocumentFragment();
+  job.items.forEach((item,index)=>{
+    const row = rows.appendChild(document.createElement("tr"));
+    row.className = "checklist-item";
+    for (const value of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行",item.evidence?.reason || ""]) {
+      row.insertCell().textContent = value;
+    }
+    if (!item.cases?.length) return;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "case-toggle";
+    const completed = item.cases.filter(test=>["pass","fail","blocked"].includes(test.state)).length;
+    toggle.textContent = `测试用例 · 已处理 ${completed} / ${item.cases.length}`;
+    row.cells[0].append(toggle);
+
+    const cases = item.cases.map((test,caseIndex)=>{
+      const caseRow = rows.appendChild(document.createElement("tr"));
+      caseRow.className = "case-row";
+      caseRow.id = `case-${index}-${caseIndex}`;
+      const title = document.createElement("div");
+      title.className = "case-title";
+      const id = document.createElement("span");
+      id.className = "case-id mono";
+      id.textContent = test.id;
+      const description = document.createElement("span");
+      description.textContent = test.title;
+      title.append(id,description);
+      caseRow.insertCell().append(title);
+      caseRow.insertCell().append(label(caseLabels[test.state]));
+      caseRow.insertCell().textContent = test.evidence || "";
+      return caseRow;
+    });
+    toggle.setAttribute("aria-controls",cases.map(caseRow=>caseRow.id).join(" "));
+    function setExpanded(expanded) {
+      toggle.setAttribute("aria-expanded",String(expanded));
+      for (const caseRow of cases) caseRow.hidden = !expanded;
+    }
+    setExpanded(expandedCaseGroups.get(item.key) ?? job.config.mode==="branch");
+    toggle.addEventListener("click",()=>{
+      const expanded = toggle.getAttribute("aria-expanded")==="false";
+      expandedCaseGroups.set(item.key,expanded);
+      setExpanded(expanded);
+    });
+  });
+  byId("items").replaceChildren(rows);
+}
+
 async function refreshJob(id, generation) {
   try {
     const job = await api("jobs/" + id);
@@ -481,33 +535,7 @@ async function refreshJob(id, generation) {
     set("progressCount",counts ? `${counts[0]} / ${counts[1]} ${counts[2]}` : "进度待确认");
     set("summary",Object.entries(resultNames).map(([key,name]) =>
       `${name} ${job.items.filter(item => item.result === key).length}`).join(" · ") + " · 未回写");
-    const expanded = new Set([...byId("items").querySelectorAll("details[open]")].map(details=>details.dataset.item));
-    byId("items").replaceChildren(...job.items.map(item => {
-      const row = document.createElement("tr");
-      for (const field of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行",item.evidence?.reason || ""]) {
-        const cell = document.createElement("td");
-        cell.textContent = field;
-        row.append(cell);
-      }
-      if (item.cases?.length) {
-        const details = document.createElement("details");
-        details.className = "case-list";
-        details.dataset.item = item.key;
-        details.open = expanded.has(item.key) || job.config.mode==="branch";
-        const title = document.createElement("summary");
-        const completed = item.cases.filter(test=>["pass","fail","blocked"].includes(test.state)).length;
-        title.textContent = `测试用例 · 已处理 ${completed} / ${item.cases.length}`;
-        details.append(title);
-        for (const test of item.cases) {
-          const line = document.createElement("p");
-          line.append(document.createTextNode(test.id+" · "+test.title+" "),label(caseLabels[test.state]));
-          if (test.evidence) line.append(document.createTextNode(" · "+test.evidence));
-          details.append(line);
-        }
-        row.firstElementChild.append(details);
-      }
-      return row;
-    }));
+    renderChecklist(job);
     tick();
   } catch(error) {
     if (generation !== detailGeneration) return;
@@ -535,6 +563,9 @@ function renderRoute(navigating = false) {
   if (id === jobView) return;
   jobView = id;
   detailGeneration += 1;
+  checklistSnapshot = "";
+  expandedCaseGroups.clear();
+  byId("items").replaceChildren();
   stream?.close();
   logs.clear();
   byId("logEntries").replaceChildren();
