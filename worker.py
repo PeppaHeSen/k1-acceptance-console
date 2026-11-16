@@ -27,7 +27,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.12.5"
+WORKER_VERSION = "0.12.7"
 CASE_PLAN_SCHEMA = {
     "type": "object", "required": ["summary", "items"], "additionalProperties": False,
     "properties": {
@@ -190,8 +190,23 @@ var animators = displayed.SelectMany(c => c.GetComponentsInChildren<UnityEngine.
     .Where(a => a.isInitialized && a.runtimeAnimatorController != null)
     .Select(a => new { name = a.name, controller = a.runtimeAnimatorController.name,
         clips = a.GetCurrentAnimatorClipInfo(0).Select(x => x.clip.name).Take(5).ToArray() }).Take(20).ToArray();
+object Member(object value, string name) {
+    if (value == null) return null;
+    var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+        System.Reflection.BindingFlags.Instance;
+    var type = value.GetType();
+    return type.GetField(name, flags)?.GetValue(value) ?? type.GetProperty(name, flags)?.GetValue(value);
+}
+var lineup = displayed.Where(c => c.name.StartsWith("UITowerDefenseHeroSel"))
+    .SelectMany(c => c.GetComponentsInChildren<UnityEngine.MonoBehaviour>(false))
+    .Where(b => b != null && b.GetType().Name == "UIDragonHeroListHalfItem")
+    .Select(b => new { slot = b.transform.parent?.name,
+        hero = Member(Member(Member(b, "mHeroData"), "HeroCfg"), "Id"),
+        portrait = b.GetComponentsInChildren<UnityEngine.UI.Image>(false)
+            .Where(i => i.sprite != null && i.sprite.name.Contains("Heroportrait"))
+            .Select(i => i.sprite.name).FirstOrDefault() }).Take(8).ToArray();
 return new { server = Logic.LPlayer.I.ServerId, player = Logic.LPlayer.I.PlayerID,
-    canvases = canvases.Select(c => c.name).Take(24).ToArray(), controls, animators };
+    canvases = canvases.Select(c => c.name).Take(24).ToArray(), controls, animators, lineup };
 '''
 
 CLICK_UI = r'''

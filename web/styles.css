@@ -8,6 +8,7 @@
     --field-fill: #fff; --field-edge: #a0aec4; --field-placeholder: #525e72;
     --ink: #182131; --muted: #525e72; --accent: #075cd6; --accent-hover: #064eb7;
     --soft-blue: #e9f1ff; --good: #08734e; --soft-green: #e6f6ee; --warn: #8a5410; --soft-warn: #fff2da;
+    --error: #9f1732; --soft-error: #ffe4ea;
     --console: #f3f8ff; --console-head: #ffffff55;
     --console-ink: #1b2b45; --console-muted: #4c5e77; --console-blue: #1554a1;
     --shadow: 0 1px 0 var(--glass-highlight) inset, 0 8px 28px #2f4b7c19; --red: #a43238;
@@ -23,6 +24,7 @@
     --field-fill: #344259; --field-edge: #8293af; --field-placeholder: #c2cde0;
     --ink: #f2f5fd; --muted: #b6c1d5; --accent: #75acff; --accent-hover: #9bc3ff;
     --soft-blue: #253858; --good: #83e1b1; --soft-green: #233d36; --warn: #f4cb89; --soft-warn: #42352a;
+    --error: #ffb2bf; --soft-error: #532c39;
     --console: #151e2d; --console-head: #a2bdf218;
     --console-ink: #e3e9f7; --console-muted: #b5c2d9; --console-blue: #a1c4ff;
     --shadow: 0 1px 0 var(--glass-highlight) inset, 0 8px 28px #0003; --red: #ffabab;
@@ -95,6 +97,10 @@
   .pill.active { background: var(--soft-blue); color: var(--accent); }
   .pill.pass { background: var(--soft-green); color: var(--good); }
   .pill.review { background: var(--soft-warn); color: var(--warn); }
+  .pill.error { background: var(--soft-error); color: var(--error); }
+  .check-result:is(.pass,.error,.review)::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
   .elapsed { padding-left: 6px; border-left: 1px solid var(--border); }
   .mono, .entry time { font-family: "IBM Plex Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
 

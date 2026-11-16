@@ -21,6 +21,7 @@ const time = value => new Date(value * 1000).toLocaleString("zh-CN");
 const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour12:false});
 const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
+const resultTone = {pass:"pass",fail:"error",blocked:"error",error:"error",confirm:"review",review:"review",running:"active"};
 let queueFilter = "all";
 let queueSnapshot;
 let sheetChoice = "";
@@ -528,9 +529,8 @@ function renderChecklist(job) {
   job.items.forEach((item,index)=>{
     const row = rows.appendChild(document.createElement("tr"));
     row.className = "checklist-item";
-    for (const value of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行"]) {
-      row.insertCell().textContent = value;
-    }
+    row.insertCell().textContent = `${item.key} · ${item.title}`;
+    row.insertCell().append(checkResult(item.result));
     renderEvidence(row.insertCell(),item.evidence?.reason,item.key);
     if (!item.cases?.length) return;
 
@@ -554,7 +554,7 @@ function renderChecklist(job) {
       description.textContent = test.title;
       title.append(id,description);
       caseRow.insertCell().append(title);
-      caseRow.insertCell().append(label(caseLabels[test.state],test.state==="pass" ? "pass" : ""));
+      caseRow.insertCell().append(checkResult(test.state));
       const screenshot = `item-${index+1}-${test.id}.png`;
       const url = job.screenshots?.includes(screenshot) ? `/api/jobs/${job.id}/screenshots/${screenshot}` : "";
       renderEvidence(caseRow.insertCell(),test.evidence,test.id,url);
@@ -573,6 +573,12 @@ function renderChecklist(job) {
     });
   });
   byId("items").replaceChildren(rows);
+}
+
+function checkResult(status) {
+  const badge = label(caseLabels[status] || "待执行",resultTone[status]);
+  badge.classList.add("check-result");
+  return badge;
 }
 
 async function refreshJob(id, generation) {
