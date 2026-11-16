@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--unity-editor", type=Path)
     parser.add_argument("--claude")
     parser.add_argument("--join-url", help="HTTPS address of the main server for a node-only install")
-    parser.add_argument("--node-id", help="Identifier issued by the main server")
+    parser.add_argument("--node-id", help="Use an existing manually issued node identifier")
     parser.add_argument("--ca-cert", type=Path, help="Public trust certificate for the main server")
     parser.add_argument("--method", choices=["Unity", "真机"], action="append")
     args = parser.parse_args()
@@ -39,11 +39,10 @@ def main():
         url = urlsplit(args.join_url)
         if url.scheme != "https" or not url.hostname or url.username or url.password or url.path not in ("", "/") or url.query or url.fragment:
             parser.error("--join-url must be the main server HTTPS origin")
-        if not args.node_id:
-            parser.error("--node-id is required with --join-url")
         if args.ca_cert and not args.ca_cert.is_file():
             parser.error("--ca-cert must point to a readable certificate file")
-        token = getpass.getpass("Node token issued by the main server: ").strip()
+        token = (getpass.getpass("Node token issued by the main server: ").strip()
+                 if args.node_id else secrets.token_urlsafe(32))
         if not token:
             parser.error("The node token is required")
         private_file(root / "node.json", {

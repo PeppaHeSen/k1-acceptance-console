@@ -3,6 +3,7 @@
 import argparse
 import base64
 from contextlib import closing
+from hmac import compare_digest
 from http.client import HTTPConnection, HTTPException
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,8 @@ from threading import Lock
 from time import monotonic, time
 from unicodedata import category, normalize
 from urllib.parse import parse_qs, urlsplit
+
+from server import ApiError, Console
 
 
 FORWARDED_HEADERS = ("Authorization", "Content-Type", "Last-Event-ID")
@@ -111,6 +114,9 @@ class Gateway(BaseHTTPRequestHandler):
         if path == "/operator":
             self.current_operator()
             return
+        if path == "/api/nodes/pairings":
+            self.pairing_request(path)
+            return
         credential = self.operator_credential()
         if path == "/" and not credential:
             self.login_page()
@@ -124,8 +130,45 @@ class Gateway(BaseHTTPRequestHandler):
         elif path == "/logout":
             self.server.logout(self.session_token())
             self.redirect_session("", 0)
+        elif path in ("/api/nodes/pairings", "/api/agent/pair"):
+            self.pairing_request(path)
         else:
             self.forward(self.operator_credential())
+
+    def pairing_request(self, path):
+        try:
+            if path == "/api/nodes/pairings":
+                credential = self.operator_credential() or ""
+                if not compare_digest(credential.encode(), self.server.service_credential.encode()):
+                    raise ApiError(401, "请先登录验收台。")
+            console = self.server.console
+            if self.command == "GET":
+                result = console.pairing_status()
+            else:
+                data = self.pairing_body()
+                if path == "/api/agent/pair":
+                    result = console.accept_pairing(self.client_address[0], data)
+                else:
+                    result = console.request_pairing(data)
+            status = 200
+        except ApiError as error:
+            status, result = error.status, {"error": str(error)}
+        except sqlite3.Error:
+            status, result = 503, {"error": "节点配对服务暂不可用。"}
+        self.respond_json(status, result)
+
+    def pairing_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+            if (not 0 < length <= 2048 or self.headers.get("Transfer-Encoding")
+                    or self.headers.get_content_type() != "application/json"):
+                raise ValueError()
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError()
+            return data
+        except (ValueError, RecursionError):
+            raise ApiError(400, "节点配对请求格式无效。") from None
 
     def operator_credential(self):
         if credential := self.headers.get("Authorization"):
@@ -143,8 +186,11 @@ class Gateway(BaseHTTPRequestHandler):
 
     def current_operator(self):
         name = self.server.session(self.session_token())
-        body = json.dumps({"name": name}, ensure_ascii=False).encode()
-        self.send_response(200)
+        self.respond_json(200, {"name": name})
+
+    def respond_json(self, status, result):
+        body = json.dumps(result, ensure_ascii=False).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
@@ -300,6 +346,7 @@ def main():
     config = json.loads(args.server_config.read_text(encoding="utf-8"))
     service_credential = base64.b64encode(f"{config['operator']}:{config['password']}".encode()).decode()
     operators = Operators(args.server_config.with_name("operators.sqlite3"))
+    console = Console(config["database"], config, None)
     if args.generate_cert:
         create_certificate(args.bind, Path(args.cert), Path(args.key))
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -309,6 +356,7 @@ def main():
         gateway.upstream_port = args.upstream_port
         gateway.service_credential = "Basic " + service_credential
         gateway.operators = operators
+        gateway.console = console
         gateway.tls = tls
         print(f"K1 HTTPS entry listening on https://{args.bind}:{args.port}/", flush=True)
         gateway.serve_forever()

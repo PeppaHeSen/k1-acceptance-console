@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Address, IPv4Network
 import json
 from pathlib import Path
 import re
@@ -25,6 +26,8 @@ EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished",
           "execution_finished", "execution_error"}
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
+PAIRING_TIMEOUT = 5 * 60
+LAN_NETWORKS = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
 
 
 class ApiError(Exception):
@@ -61,6 +64,10 @@ class Console:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT NOT NULL,
                     token TEXT NOT NULL, root TEXT, capabilities TEXT NOT NULL DEFAULT '[]',
                     checks TEXT NOT NULL DEFAULT '[]', seen REAL NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS node_pairings (
+                    ip TEXT PRIMARY KEY, name TEXT NOT NULL, expires REAL NOT NULL,
+                    node TEXT UNIQUE REFERENCES nodes(id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS jobs (
                     id INTEGER PRIMARY KEY, request TEXT UNIQUE NOT NULL, request_body TEXT NOT NULL,
@@ -139,10 +146,66 @@ class Console:
         name, os_name = bounded(body, "name", 60), bounded(body, "os", 12)
         if not name or os_name not in {"macOS", "Windows"}:
             raise ApiError(400, "请填写节点名称和平台。")
-        node_id, token = uuid.uuid4().hex, secrets.token_urlsafe(32)
+        token = secrets.token_urlsafe(32)
         with self.db(write=True) as db:
-            db.execute("INSERT INTO nodes(id,name,os,token) VALUES (?,?,?,?)", (node_id, name, os_name, digest(token)))
+            node_id = self.insert_node(db, name, os_name, digest(token))
         return {"id": node_id, "token": token}
+
+    @staticmethod
+    def insert_node(db, name, os_name, token_hash):
+        node_id = uuid.uuid4().hex
+        db.execute("INSERT INTO nodes(id,name,os,token) VALUES (?,?,?,?)",
+                   (node_id, name, os_name, token_hash))
+        return node_id
+
+    def request_pairing(self, body):
+        name = bounded(body, "name", 60)
+        try:
+            ip = IPv4Address(bounded(body, "ip", 15))
+        except ValueError:
+            raise ApiError(400, "请输入有效的内网 IPv4 地址。") from None
+        if not name or not any(ip in network for network in LAN_NETWORKS):
+            raise ApiError(400, "请输入节点名称和内网 IPv4 地址。")
+        ip = str(ip)
+        with self.db(write=True) as db:
+            now = time.time()
+            db.execute("DELETE FROM node_pairings WHERE node IS NULL AND expires <= ?", (now,))
+            existing = db.execute("SELECT * FROM node_pairings WHERE ip=?", (ip,)).fetchone()
+            if existing:
+                if existing["node"]:
+                    raise ApiError(409, "此 IP 已登记执行节点。")
+                if existing["name"] != name:
+                    raise ApiError(409, "此 IP 已有待配对请求，请等待该请求到期。")
+                return dict(existing)
+            expires = now + PAIRING_TIMEOUT
+            db.execute("INSERT INTO node_pairings(ip,name,expires) VALUES (?,?,?)", (ip, name, expires))
+        return {"ip": ip, "name": name, "expires": expires, "node": None}
+
+    def pairing_status(self):
+        with self.db() as db:
+            rows = db.execute("""SELECT ip,name,expires,node FROM node_pairings
+                                 WHERE node IS NOT NULL OR expires > ? ORDER BY name""", (time.time(),))
+            return {"items": [dict(row) for row in rows]}
+
+    def accept_pairing(self, ip, body):
+        os_name = bounded(body, "os", 12)
+        token = bounded(body, "token", 43)
+        if os_name not in {"macOS", "Windows"} or not re.fullmatch(r"[\w-]{43}", token, re.ASCII):
+            raise ApiError(400, "执行节点配对请求格式无效。")
+        token_hash = digest(token)
+        with self.db(write=True) as db:
+            row = db.execute("""SELECT p.name,p.node,p.expires,n.token,n.os FROM node_pairings p
+                                LEFT JOIN nodes n ON n.id=p.node WHERE p.ip=?""", (ip,)).fetchone()
+            if not row:
+                return {"id": None}
+            if row["node"]:
+                same_node = row["os"] == os_name and hmac.compare_digest(row["token"], token_hash)
+                return {"id": row["node"] if same_node else None}
+            if row["expires"] <= time.time():
+                return {"id": None}
+            node_id = self.insert_node(db, row["name"], os_name, token_hash)
+            db.execute("UPDATE node_pairings SET node=? WHERE ip=?", (node_id, ip))
+            return {"id": node_id}
 
     def configure_node(self, node_id, body):
         root = bounded(body, "root", 512)

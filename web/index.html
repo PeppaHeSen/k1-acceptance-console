@@ -79,13 +79,14 @@
             <div class="wizard-actions"><button type="submit" class="primary">保存并检查</button></div>
           </form>
           <details class="node-add">
-            <summary>登记执行节点</summary>
+            <summary>添加执行节点</summary>
+            <p>先让 Agent 在新机器上部署并启动执行程序，再填写该机器的内网 IP。</p>
             <form id="register">
               <div><label for="nodeName">节点名称</label><input id="nodeName" name="name" type="text" required maxlength="60"></div>
-              <div><label for="nodeOs">操作系统</label><select id="nodeOs" name="os"><option>macOS</option><option>Windows</option></select></div>
-              <button type="submit" class="secondary">登记节点</button>
+              <div><label for="nodeIp">执行节点内网 IP</label><input id="nodeIp" name="ip" type="text" inputmode="decimal" required maxlength="15" placeholder="如 192.168.1.20"></div>
+              <button type="submit" class="secondary">连接并登记</button>
             </form>
-            <pre id="enroll" aria-live="polite" style="overflow:auto"></pre>
+            <ul id="pairings" class="dependency-list" aria-label="节点登记状态"></ul>
           </details>
         </div>
         <section class="card wizard-panel"><h2>启动检查</h2><ul id="checks" class="dependency-list"></ul></section>

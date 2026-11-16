@@ -11,10 +11,11 @@ import shutil
 import ssl
 import sqlite3
 import subprocess
+from tempfile import NamedTemporaryFile
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 
 REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
@@ -28,12 +29,17 @@ def command(args, cwd=None, timeout=30):
 
 
 def save_json(path, data):
-    temporary = path.with_suffix(".pending")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False)
-        file.flush()
-        os.fsync(file.fileno())
-    os.replace(temporary, path)
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(data, file, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+            file.close()
+            os.replace(temporary, path)
+        finally:
+            file.close()
+            temporary.unlink(missing_ok=True)
 
 
 class Node:
@@ -52,17 +58,42 @@ class Node:
         self.tls = ssl.create_default_context()
         if config.get("ca_cert"):
             self.tls.load_verify_locations(cafile=config["ca_cert"])
+        self.http = build_opener(ProxyHandler({}), HTTPSHandler(context=self.tls))
         self.attempt = json.loads(self.ledger.read_text(encoding="utf-8")) if self.ledger.exists() else None
         self.stop = threading.Event()
 
     def call(self, path, body):
+        headers = {"Content-Type": "application/json"}
+        if path != "pair":
+            headers.update({"X-Node-ID": self.config["id"],
+                            "Authorization": "Bearer " + self.config["token"]})
         request = Request(self.config["url"].rstrip("/") + "/api/agent/" + path,
-                          json.dumps(body, ensure_ascii=False).encode(), headers={
-                              "Content-Type": "application/json", "X-Node-ID": self.config["id"],
-                              "Authorization": "Bearer " + self.config["token"],
-                          })
-        with urlopen(request, timeout=12, context=self.tls) as response:
+                          json.dumps(body, ensure_ascii=False).encode(), headers=headers)
+        with self.http.open(request, timeout=12) as response:
             return json.load(response)
+
+    def pair(self, config_path):
+        if self.config.get("id"):
+            return
+        if self.os_name not in {"macOS", "Windows"}:
+            raise SystemExit("Automatic pairing supports macOS and Windows nodes.")
+        if not self.config["url"].startswith("https://"):
+            raise SystemExit("Automatic pairing requires the main server's HTTPS address.")
+        print("Waiting for pairing. Enter this machine's LAN IP in the console.", flush=True)
+        while True:
+            try:
+                node_id = self.call("pair", {"os": self.os_name, "token": self.config["token"]})["id"]
+                if node_id:
+                    if not re.fullmatch(r"[a-f0-9]{32}", node_id):
+                        raise ValueError("Invalid node identifier")
+                    config = {**self.config, "id": node_id}
+                    save_json(config_path, config)
+                    self.config = config
+                    print("Paired with the console.", flush=True)
+                    return
+            except (OSError, ValueError) as error:
+                print(f"Pairing retry: {error}", flush=True)
+            time.sleep(3)
 
     def check_skill(self):
         path = Path(self.config["skill"])
@@ -339,4 +370,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args()
-    Node(json.loads(args.config.read_text(encoding="utf-8"))).run()
+    node = Node(json.loads(args.config.read_text(encoding="utf-8")))
+    node.pair(args.config.resolve())
+    node.run()

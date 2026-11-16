@@ -10,6 +10,8 @@ let stream;
 let jobView;
 let submitAttempt;
 let loadingState = false;
+let pairings = [];
+let requestedPairing;
 let detailGeneration = 0;
 const logs = new Set();
 const time = value => new Date(value * 1000).toLocaleString("zh-CN");
@@ -18,7 +20,7 @@ async function api(path, body) {
   const result = await fetch("/api/" + path, body === undefined ? {} : {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
   });
-  if (result.status === 401) throw new Error("请使用部署账号登录。");
+  if (result.status === 401) throw new Error("请先登录验收台。");
   const data = await result.json();
   if (!result.ok) throw new Error(data.error || "操作失败。");
   return data;
@@ -77,6 +79,13 @@ async function refreshState() {
   try {
     view = await api("state");
     if (!location.hash && !view.nodes.some(node => node.root)) location.hash = "#setup";
+    if (location.hash === "#setup") {
+      try {
+        pairings = (await api("nodes/pairings")).items;
+        renderPairings();
+      }
+      catch (error) { set("pairings",error.message); }
+    }
     renderDashboard();
     renderSetup();
     if (jobView) await refreshJob(jobView, detailGeneration);
@@ -117,6 +126,15 @@ function renderDashboard() {
 function renderSetup() {
   const menu = byId("setupNode");
   choices(menu,view.nodes.map(node => [node.id,`${node.name} · ${node.os}`]),"选择节点");
+  const registered = pairings.find(pair => pair.ip === requestedPairing?.ip);
+  if (registered?.node && view.nodes.some(node => node.id === registered.node)) {
+    menu.value = registered.node;
+    requestedPairing = undefined;
+    message(`${registered.name} 已登记。请保存该节点的三端工程根目录。`);
+  } else if (requestedPairing && !registered && Date.now() >= requestedPairing.deadline) {
+    requestedPairing = undefined;
+    message("等待配对已超时。请检查节点 IP 和执行程序，再点击「连接并登记」。");
+  }
   const node = view.nodes.find(node => node.id === menu.value);
   if (!node) return set("checks","请先登记并启动执行节点。");
   if (byId("root").dataset.node !== node.id) {
@@ -129,6 +147,18 @@ function renderSetup() {
     const lhs = document.createElement("span");
     lhs.textContent = check.label + (check.detail ? " · " + check.detail : "");
     row.append(lhs, label(check.ok ? "通过" : "待配置",check.ok ? "pass" : "review"));
+    return row;
+  }));
+}
+
+function renderPairings() {
+  byId("pairings").replaceChildren(...pairings.map(pair => {
+    const node = view.nodes.find(node => node.id === pair.node);
+    const row = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = `${pair.name} · ${pair.ip}`;
+    const status = node ? nodeStatus(node) : pair.node ? "已登记" : "等待配对";
+    row.append(name,label(status,node?.capabilities.length ? "pass" : "review"));
     return row;
   }));
 }
@@ -230,11 +260,11 @@ action(byId("setupForm"),async () => {
   message("已保存。等待节点检查结果。");
 });
 action(byId("register"),async data => {
-  const result = await api("nodes",Object.fromEntries(data));
-  set("enroll",JSON.stringify(result,null,2));
-  await refreshState();
-  byId("setupNode").value = result.id;
-  renderSetup();
+  const result = await api("nodes/pairings",Object.fromEntries(data));
+  pairings = [...pairings.filter(pair => pair.ip !== result.ip),result];
+  requestedPairing = {ip:result.ip, deadline:Date.now() + 300000};
+  renderPairings();
+  message("等待执行程序配对。登记请求 5 分钟内有效。");
 });
 action(byId("closeReview"),async () => {
   await api(`jobs/${jobView}/close`,{reason:byId("closeReason").value});
