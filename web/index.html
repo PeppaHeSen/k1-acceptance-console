@@ -175,7 +175,14 @@
     </section>
     <section id="detail" class="detail-view" hidden>
       <a class="back primary" href="#dashboard"><span aria-hidden="true">‹</span> 返回运行队列</a>
-      <div class="page-intro"><div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div><div class="detail-actions"><span id="state" class="pill"></span><button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button></div></div>
+      <div class="page-intro">
+        <div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div>
+        <div class="detail-actions">
+          <span id="state" class="pill"></span>
+          <button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button>
+          <span id="detailStop" hidden></span>
+        </div>
+      </div>
       <section class="card run">
         <div class="title-line"><h2 id="progressTitle">运行进度</h2><span id="progressCount" class="sub mono"></span></div>
         <p class="sub" id="stage"></p>

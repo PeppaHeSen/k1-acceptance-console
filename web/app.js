@@ -311,15 +311,15 @@ function canStop(job) {
   return job.state==="running" && view.nodes.some(node=>node.id===job.node && node.stop_supported);
 }
 
-function queueAction(job, action, caption) {
+function jobAction(job, action, caption) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "secondary queue-action";
+  button.className = "secondary";
   button.textContent = caption;
   button.setAttribute("aria-label",caption+"批次 #"+job.id);
   button.addEventListener("click",async event=>{
     event.stopPropagation();
-    if (!confirm(action==="stop" ? `停止批次 #${job.id}？节点完成清理后会更新状态。` : `删除等待中的批次 #${job.id}？`)) return;
+    if (!confirm(action==="stop" ? `强制停止批次 #${job.id}？节点完成清理后会更新状态。` : `删除等待中的批次 #${job.id}？`)) return;
     button.disabled = true;
     try {
       await api(`jobs/${job.id}/${action}`,{});
@@ -330,6 +330,12 @@ function queueAction(job, action, caption) {
       button.disabled = false;
     }
   });
+  return button;
+}
+
+function stopJobAction(job, label="停止") {
+  const button = jobAction(job,"stop",job.stop_requested ? "正在停止" : label);
+  button.disabled = Boolean(job.stop_requested);
   return button;
 }
 
@@ -379,12 +385,8 @@ function renderQueue(jobs) {
     open.textContent = "详情 →";
     const controls = document.createElement("div");
     controls.className = "job-controls";
-    if (job.state==="queued") controls.append(queueAction(job,"delete","删除"));
-    else if (canStop(job)) {
-      const stop = queueAction(job,"stop",job.stop_requested ? "正在停止" : "停止");
-      stop.disabled = Boolean(job.stop_requested);
-      controls.append(stop);
-    }
+    if (job.state==="queued") controls.append(jobAction(job,"delete","删除"));
+    else if (canStop(job)) controls.append(stopJobAction(job));
     controls.append(open);
     row.append(group,phase,jobStatus(job),controls);
     return row;
@@ -528,6 +530,13 @@ async function refreshJob(id, generation) {
     set("context",[modeSummary(job.config),job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
+    const stop = byId("detailStop");
+    stop.hidden = !canStop(job);
+    const stopState = String(Boolean(job.stop_requested));
+    if (!stop.hidden && stop.dataset.requested !== stopState) {
+      stop.dataset.requested = stopState;
+      stop.replaceChildren(stopJobAction(job,"强制停止"));
+    }
     set("stage",job.state==="running" && job.stop_requested ? "正在停止，等待节点清理。" : job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
     const counts = completion(job);
@@ -563,6 +572,10 @@ function renderRoute(navigating = false) {
   if (id === jobView) return;
   jobView = id;
   detailGeneration += 1;
+  const stop = byId("detailStop");
+  stop.hidden = true;
+  delete stop.dataset.requested;
+  stop.replaceChildren();
   checklistSnapshot = "";
   expandedCaseGroups.clear();
   byId("items").replaceChildren();

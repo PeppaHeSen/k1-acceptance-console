@@ -115,7 +115,9 @@
   .job-title { color: inherit; font-weight: 700; text-decoration: none; }
   .job-title:hover { text-decoration: underline; }
   .job-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
-  .queue-action { min-height: 28px; padding: 3px 8px; font-size: 12px; color: var(--red); }
+  .job-controls button, #detailStop button { color: var(--red); }
+  .job-controls button { min-height: 28px; padding: 3px 8px; font-size: 12px; }
+  #detailStop button { border-color: color-mix(in srgb, var(--red) 35%, var(--glass-edge)); }
   #branchCandidates { margin-top: 6px; }
   .job small { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .job-phase > div:first-child { display: flex; justify-content: space-between; gap: 7px; font-size: 12px; color: var(--muted); }
