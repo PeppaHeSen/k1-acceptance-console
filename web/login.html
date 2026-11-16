@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN" data-resolved-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 K1 验收台</title>
+  <script src="/appearance.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="card login-card" aria-labelledby="loginTitle">
+      <div class="login-heading"><span class="mark" aria-hidden="true">K1</span><h1 id="loginTitle">登录 K1 验收台</h1></div>
+      <!-- login-message -->
+      <form method="post" action="/login">
+        <label for="operator">操作员</label>
+        <input id="operator" name="operator" type="text" autocomplete="username" maxlength="50" required>
+        <button type="submit" class="primary">进入验收台</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

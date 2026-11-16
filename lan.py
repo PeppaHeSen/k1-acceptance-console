@@ -4,6 +4,7 @@ import argparse
 import base64
 from contextlib import closing
 from hmac import compare_digest
+from html import escape
 from http.client import HTTPConnection, HTTPException
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +23,7 @@ from time import monotonic, time
 from unicodedata import category, normalize
 from urllib.parse import parse_qs, urlsplit
 
-from server import ApiError, Console
+from server import APPEARANCE_ASSETS, PROJECT, ApiError, Console
 
 
 FORWARDED_HEADERS = ("Authorization", "Content-Type", "Last-Event-ID")
@@ -32,21 +33,6 @@ RESPONSE_HEADERS = (
 )
 COOKIE = "k1_console"
 SESSION_LIFETIME = 12 * 60 * 60
-LOGIN_HTML = """<!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 K1 验收台</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#f3f7f7;color:#152430;font:15px system-ui,sans-serif}
-main{max-width:430px;margin:12vh auto;padding:18px}section{border:1px solid #dae4e8;background:white;
-border-radius:14px;padding:28px;box-shadow:0 3px 12px #12352a10}h1{margin:0 0 20px;font-size:24px}
-label{display:block;margin:12px 0 5px}input,button{width:100%;font:inherit;padding:10px;border:1px solid
-#cddce0;border-radius:6px}button{margin-top:18px;background:#00695d;color:white;border:0;font-weight:650}
-p{color:#a43238}
-</style>
-<main><section><h1>登录 K1 验收台</h1>{message}
-<form method="post" action="/login">
-<label for="operator">操作员</label><input id="operator" name="operator" autocomplete="username" maxlength="50" required>
-<button type="submit">进入验收台</button></form></section></main></html>"""
 
 
 class Operators:
@@ -111,6 +97,9 @@ class TlsServer(ThreadingHTTPServer):
 class Gateway(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path in APPEARANCE_ASSETS:
+            self.forward(self.server.service_credential)
+            return
         if path == "/operator":
             self.current_operator()
             return
@@ -198,12 +187,17 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def login_page(self, status=200, message=""):
-        body = LOGIN_HTML.replace("{message}", f'<p role="alert">{message}</p>' if message else "").encode()
+        template = (PROJECT / "web/login.html").read_text(encoding="utf-8")
+        error = f'<p class="login-error" role="alert">{escape(message)}</p>' if message else ""
+        body = template.replace("<!-- login-message -->", error).encode()
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; script-src 'self'; style-src 'self'; "
+                         "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 

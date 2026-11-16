@@ -10,6 +10,7 @@ let stream;
 let jobView;
 let submitAttempt;
 let loadingState = false;
+let stateReady = false;
 let pairings = [];
 let requestedPairing;
 let detailGeneration = 0;
@@ -20,7 +21,6 @@ const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
 let queueFilter = "all";
 let queueSnapshot;
-const appearance = matchMedia("(prefers-color-scheme: dark)");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const transparency = byId("glassTransparency");
 const themeChoices = [...document.querySelectorAll('input[name="theme"]')];
@@ -39,9 +39,6 @@ function animatePage(page, returning) {
 
 function renderAppearance() {
   const selected = themeChoices.find(input=>input.checked);
-  document.documentElement.dataset.resolvedTheme = selected.value==="system"
-    ? (appearance.matches ? "dark" : "light") : selected.value;
-  document.documentElement.style.setProperty("--glass-opacity",(100-transparency.valueAsNumber)+"%");
   byId("glassValue").value = transparency.value+"%";
   set("themeSummary",selected.labels[0].textContent.trim());
 }
@@ -71,7 +68,7 @@ function retentionEffect() {
 }
 
 async function api(path, body) {
-  const result = await fetch("/api/" + path, body === undefined ? {} : {
+  const result = await fetch("/api/" + path, body === undefined ? {signal:AbortSignal.timeout(8000)} : {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
   });
   if (result.status === 401) throw new Error("请先登录验收台。");
@@ -183,6 +180,7 @@ function nodeStatus(node) {
 async function refreshState() {
   if (loadingState) return;
   loadingState = true;
+  if (!stateReady) byId("retryQueue").disabled = true;
   try {
     view = await api("state");
     if (!location.hash && !view.nodes.some(node => node.root)) location.hash = "#setup";
@@ -195,14 +193,30 @@ async function refreshState() {
     }
     renderDashboard();
     renderSetup();
+    if (!stateReady) {
+      stateReady = true;
+      byId("queueStatus").hidden = true;
+      byId("queue").hidden = false;
+      byId("online").disabled = byId("newJob").disabled = false;
+    }
     if (view.retention) {
       set("retentionSummary",`最多 ${view.retention.limit} 条`);
       if (settingsPage==="retentionForm" && byId("settingsDialog").open) retentionEffect();
     }
     if (jobView) await refreshJob(jobView, detailGeneration);
     else renderRoute();
-  } catch (error) { message(error.message); }
-  finally { loadingState = false; }
+  } catch (error) {
+    if (!stateReady && !byId("dashboard").hidden) {
+      set("queueStatusText",error.name==="TimeoutError" ? "读取队列超时，正在重试。"
+        : "暂时无法读取队列。"+error.message);
+      byId("retryQueue").hidden = false;
+    } else {
+      message(error.name==="TimeoutError" ? "读取状态超时，稍后自动重试。" : error.message);
+    }
+  } finally {
+    loadingState = false;
+    byId("retryQueue").disabled = false;
+  }
 }
 
 function renderDashboard() {
@@ -474,23 +488,15 @@ for (const [button,dialog] of [["online","nodeDialog"],["newJob","jobDialog"],["
   byId(button).addEventListener("click",()=>byId(dialog).showModal());
 }
 document.querySelectorAll("[data-close-dialog]").forEach(element=>element.addEventListener("click",()=>element.closest("dialog").close()));
-try {
-  const selected = themeChoices.find(input=>input.value===localStorage.getItem("k1-theme"));
-  if (selected) selected.checked = true;
-  const value = localStorage.getItem("k1-glass-transparency");
-  if (value !== null) transparency.value = value;
-} catch {}
+themeChoices.find(input=>input.value===consoleAppearance.theme).checked = true;
+transparency.value = consoleAppearance.transparency;
 renderAppearance();
-appearance.addEventListener("change",renderAppearance);
 reducedMotion.addEventListener("change",()=>{
   if (reducedMotion.matches) pageMotion?.cancel();
 });
 byId("appearanceSettings").addEventListener("input",()=>{
+  consoleAppearance.update(themeChoices.find(input=>input.checked).value,transparency.valueAsNumber);
   renderAppearance();
-  try {
-    localStorage.setItem("k1-theme",themeChoices.find(input=>input.checked).value);
-    localStorage.setItem("k1-glass-transparency",transparency.value);
-  } catch {}
 });
 byId("settingsButton").addEventListener("click",()=>{
   showSettings("settingsHome");
@@ -534,6 +540,7 @@ byId("retentionForm").addEventListener("submit",async event=>{
   }
 });
 byId("reloadBrowser").addEventListener("click",()=>location.reload());
+byId("retryQueue").addEventListener("click",refreshState);
 byId("queueFilters").addEventListener("click",event=>{
   const button = event.target.closest("button[data-filter]");
   if (!button) return;

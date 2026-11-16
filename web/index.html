@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="k1-version" content="__K1_VERSION__">
   <title>K1 验收台</title>
+  <script src="/appearance.js"></script>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -13,7 +14,7 @@
     <div class="top">
       <div class="brand"><span class="mark">K1</span> 验收台</div>
       <div class="header-actions">
-        <button id="online" class="secondary" type="button" title="查看执行节点"></button>
+        <button id="online" class="secondary" type="button" title="查看执行节点" disabled>读取节点中…</button>
         <button id="releaseButton" class="secondary" type="button" hidden></button>
         <button id="settingsButton" class="secondary" type="button" aria-haspopup="dialog" aria-controls="settingsDialog"><span aria-hidden="true">⚙</span> 设置</button>
         <form id="operatorSession" method="post" action="/logout" hidden>
@@ -25,7 +26,7 @@
   <main>
     <p id="notice" class="field-note" role="status" hidden></p>
     <section id="dashboard" hidden>
-      <div class="page-intro"><div><h1>运行队列</h1><p id="counts" class="sub"></p></div><button id="newJob" type="button" class="primary">＋ 新建验收</button></div>
+      <div class="page-intro"><div><h1>运行队列</h1><p id="counts" class="sub"></p></div><button id="newJob" type="button" class="primary" disabled>＋ 新建验收</button></div>
       <dialog id="jobDialog" aria-label="新建验收">
         <form id="submitForm" class="card config">
           <div class="title-line"><h2>验收配置</h2><button class="secondary" data-close-dialog type="button">关闭</button></div>
@@ -72,7 +73,11 @@
           <button type="button" data-filter="done" aria-pressed="false">已结束</button>
         </nav>
         <div class="job-columns" aria-hidden="true"><span>任务</span><span>运行进度</span><span>状态</span></div>
-        <div id="queue" class="job-list"></div>
+        <div id="queueStatus" class="queue-status" role="status">
+          <span id="queueStatusText">正在加载验收记录…</span>
+          <button id="retryQueue" type="button" class="secondary" hidden>重新加载</button>
+        </div>
+        <div id="queue" class="job-list" hidden></div>
       </section>
     </section>
     <dialog id="nodeDialog" aria-label="执行节点">

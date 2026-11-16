@@ -60,7 +60,7 @@
   .header-actions, .detail-actions { gap: 8px; flex-wrap: wrap; }
   .header-actions { justify-content: flex-end; }
   #online { background: var(--soft-green); color: var(--good); }
-  #online::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  #online:not(:disabled)::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   #releaseButton.update-available { background: var(--soft-warn); color: var(--warn); }
 
   main { flex: 1; padding: 24px 0; }
@@ -82,6 +82,12 @@
   .back { align-self: flex-start; min-height: 42px; padding-inline: 16px; margin-bottom: 14px; box-shadow: 0 3px 9px #075cd628; }
   .back span { font-size: 21px; line-height: .8; }
   .card { border: 1px solid var(--glass-edge); border-radius: 20px; box-shadow: var(--shadow); min-width: 0; }
+  .login-layout { display: grid; place-items: center; }
+  .login-card { width: min(100%, 400px); padding: clamp(20px, 5vw, 30px); }
+  .login-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
+  .login-heading h1 { font-size: 24px; }
+  .login-card .primary { width: 100%; min-height: 41px; margin-top: 16px; }
+  .login-error { color: var(--red); margin-bottom: 10px; }
   .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; white-space: nowrap; font-size: 12px;
     padding: 4px 9px; font-weight: 650; background: var(--control); color: var(--muted); }
   .pill.active { background: var(--soft-blue); color: var(--accent); }
@@ -109,6 +115,7 @@
   .job .pill { width: max-content; }
   .job-open { color: var(--accent); font-size: 12px; white-space: nowrap; }
   .job-list:not(:has(.job)) { padding: 12px 17px; color: var(--muted); }
+  .queue-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 16px 17px; color: var(--muted); }
   .track {
     display: block; width: 100%; height: 9px; margin-top: 5px; border-radius: 999px; overflow: hidden;
     background: color-mix(in srgb, var(--track-tint) var(--glass-opacity), transparent);
@@ -173,7 +180,10 @@
 
   dialog { padding: 0; width: min(540px, calc(100vw - 28px)); max-height: calc(100dvh - 30px);
     border: 1px solid var(--glass-edge); border-radius: 20px; color: var(--ink); box-shadow: var(--shadow); }
-  dialog::backdrop { background: #15254030; }
+  dialog::backdrop {
+    background: #15254030;
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
   dialog .config { border: 0; box-shadow: none; background: transparent; backdrop-filter: none; }
   .config { padding: 17px; }
   .config > .primary { margin-top: 14px; }

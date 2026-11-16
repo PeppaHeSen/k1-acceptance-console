@@ -22,6 +22,10 @@ from worker import normalize_cases
 
 
 PROJECT = Path(__file__).resolve().parent
+APPEARANCE_ASSETS = {
+    "/styles.css": ("web/styles.css", "text/css"),
+    "/appearance.js": ("web/appearance.js", "text/javascript"),
+}
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
 EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "case_snapshot",
@@ -631,10 +635,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.stream(job["id"])
             else:
                 self.json_response(200, job)
-        elif path in {"/", "/app.js", "/styles.css", "/demo"}:
+        elif path in {"/", "/app.js", "/demo"} or path in APPEARANCE_ASSETS:
             file, kind = {
                 "/": ("web/index.html", "text/html"), "/app.js": ("web/app.js", "text/javascript"),
-                "/styles.css": ("web/styles.css", "text/css"), "/demo": ("public/index.html", "text/html"),
+                "/demo": ("public/index.html", "text/html"), **APPEARANCE_ASSETS,
             }[path]
             data = (PROJECT / file).read_bytes()
             if path == "/":
