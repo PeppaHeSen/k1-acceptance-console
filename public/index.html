@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>K1 验收台</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink:#152430; --muted:#536570; --line:#dae4e8; --paper:#fff;
+    --bg:#f3f7f7; --teal:#00695d; --mint:#daf2ea; --blue:#2e5b8d;
+    --amber:#81500b; --red:#a43238;
+    font-family:"Inter","Microsoft YaHei UI","PingFang SC",sans-serif;
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font-size:14px; line-height:1.5 }
+  [hidden] { display:none !important }
+  button,input,select,textarea { font:inherit }
+  button { cursor:pointer }
+  button:disabled { cursor:default; opacity:.55 }
+  :focus-visible { outline:3px solid #498dc2; outline-offset:3px }
+  header { background:#13282c; color:#fff; border-bottom:1px solid #ffffff1c }
+  .top { max-width:1280px; margin:auto; min-height:67px; padding:12px 30px; display:flex; align-items:center; justify-content:space-between; gap:14px }
+  .brand,.worker,.row,.status,.title-line { display:flex; align-items:center; gap:10px }
+  .brand { font-size:15px; font-weight:700; white-space:nowrap }
+  .mark { display:grid; place-items:center; width:34px; height:34px; border-radius:9px; background:#a7ebd2; color:#123a31; font:800 14px Consolas,monospace }
+  .worker { gap:8px; color:#e1eae8; font-size:12px }
+  .dot { width:8px; height:8px; border-radius:50%; background:#62ca9f; display:inline-block; flex:none }
+  .dot.offline { background:#f9b75d }
+  .mono { font-family:"IBM Plex Mono",Consolas,monospace; font-variant-numeric:tabular-nums }
+  main { max-width:1280px; margin:auto; padding:28px 30px 48px }
+  .intro { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:26px 32px; margin-bottom:22px; border:1px solid #d3e6e0; border-radius:15px;
+    background:linear-gradient(105deg,#e5f4ed 0%,#edf7f2 64%,#e5f5f2 100%); }
+  h1,h2,h3,p { margin:0 }
+  h1 { font-size:clamp(25px,3vw,34px); letter-spacing:-.045em; line-height:1.25 }
+  .intro p { color:#41615b; margin-top:8px }
+  .demo { font-size:12px; font-weight:700; color:#20574c; padding:5px 9px; background:#f6fbf8; border:1px solid #bcded1; border-radius:6px; white-space:nowrap }
+  .layout { display:grid; grid-template-columns:minmax(285px,330px) minmax(0,1fr); gap:22px; align-items:start }
+  .card { background:var(--paper); border:1px solid var(--line); border-radius:13px; box-shadow:0 2px 4px #182d3510; min-width:0 }
+  .config,.run { padding:23px }
+  h2 { font-size:19px; line-height:1.35; letter-spacing:-.025em }
+  .sub { font-size:12px; color:var(--muted); margin-top:4px }
+  .field { margin-top:18px }
+  label,.legend { display:block; font-weight:650; font-size:13px; margin-bottom:6px }
+  fieldset { margin:0; padding:0; border:0; min-width:0 }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  input[type=text],select,textarea { width:100%; border:1px solid #cddce0; background:#fcfdfd; color:var(--ink); border-radius:7px; padding:8px 10px; min-height:39px }
+  textarea { display:block; resize:vertical; min-height:65px }
+  .seg { display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:3px; border:1px solid #dce6e8; border-radius:8px; background:#f3f7f7 }
+  .seg label { margin:0; padding:5px 8px; text-align:center; border:1px solid transparent; border-radius:5px; font-size:13px; color:var(--muted); cursor:pointer }
+  .seg input { position:absolute; width:1px; height:1px; opacity:0 }
+  .seg label:has(:checked) { border-color:#c6ded7; background:white; color:var(--teal); box-shadow:0 1px 2px #12241b12 }
+  .seg label:has(:focus-visible) { outline:3px solid #498dc2; outline-offset:2px }
+  fieldset:disabled .seg label { cursor:default }
+  .check { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:500; margin:0 }
+  .check input { margin:0; accent-color:var(--teal); width:15px; height:15px }
+  .preview { margin:16px 0; padding:11px 12px; border-radius:8px; background:#eff8f4; color:#2e514a }
+  .preview strong { display:block; font-size:13px }
+  .preview p { font-size:12px; margin-top:3px }
+  .primary { border:1px solid var(--teal); border-radius:7px; padding:10px 14px; background:var(--teal); color:white; font-weight:700; min-height:41px; width:100% }
+  .primary:hover:not(:disabled) { background:#075448 }
+  .secondary { border:1px solid #cfdde1; border-radius:7px; background:white; color:#24404a; font-weight:650; padding:6px 10px; min-height:34px }
+  .secondary:hover { background:#f1f7f6 }
+  .title-line { justify-content:space-between; align-items:flex-start }
+  .pill { border-radius:5px; padding:3px 7px; display:inline-block; white-space:nowrap; font-size:12px; line-height:1.5; font-weight:650; background:#edf2f3; color:#50666e }
+  .pill.active { background:#e7f0fc; color:var(--blue) }
+  .pill.pass { background:var(--mint); color:var(--teal) }
+  .pill.fail { background:#fae9e9; color:var(--red) }
+  .pill.review { background:#fdf1d8; color:var(--amber) }
+  .steps { list-style:none; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; padding:0; margin:20px 0 18px }
+  .steps li { min-width:0; position:relative; color:#63747d; font-size:12px; padding-right:7px; }
+  .steps li::before { content:""; position:absolute; z-index:0; left:25px; right:-1px; top:11px; height:1px; background:#dbe5e8 }
+  .steps li:last-child::before { display:none }
+  .step-icon { display:grid; place-items:center; width:24px; height:24px; border:1px solid #d6e2e5; border-radius:50%; background:#f4f7f8; font:12px Consolas,monospace; margin-bottom:6px }
+  .steps .active { font-weight:700; color:var(--teal) }
+  .steps .active .step-icon { background:var(--teal); color:#fff; border-color:var(--teal) }
+  .steps .done { color:var(--teal) }
+  .steps .done .step-icon { background:var(--mint); color:var(--teal); border-color:#b7ded0 }
+  .progress-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; font-weight:700; font-size:13px }
+  .progress-head .mono { font-size:16px }
+  progress { appearance:none; display:block; width:100%; height:7px; border:0; border-radius:10px; background:#e9eff0; margin:8px 0 12px; overflow:hidden }
+  progress::-webkit-progress-bar { background:#e9eff0 }
+  progress::-webkit-progress-value { background:#148975; border-radius:10px }
+  progress::-moz-progress-bar { background:#148975; border-radius:10px }
+  .stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px }
+  .stat { background:#f5f8f9; border:1px solid #e7eef0; padding:8px 10px; border-radius:7px; font-size:12px; color:#51636d }
+  .stat b { display:block; font:700 19px/1.4 Consolas,monospace; color:var(--ink) }
+  .stat:nth-child(1) b { color:var(--teal) }
+  .stat:nth-child(2) b { color:var(--red) }
+  .stat:nth-child(3) b { color:var(--amber) }
+  .current { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; padding:11px 12px; border:1px solid #dbe7e7; border-radius:8px; background:#f6faf9 }
+  .current strong { font-size:13px }
+  .current p { font-size:12px; color:var(--muted); margin-top:2px; overflow-wrap:anywhere }
+  .current .secondary { white-space:nowrap; font-size:12px }
+  .list { margin-top:16px; overflow:hidden }
+  .list h2 { font-size:17px }
+  .list-head { padding:15px 19px 13px; display:flex; justify-content:space-between; align-items:center; gap:10px }
+  .list-head .sub { margin:0 }
+  .nodes { margin-top:16px; padding:17px 20px }
+  .nodes h2 { font-size:17px }
+  .node-list { list-style:none; padding:0; margin:10px 0 0 }
+  .node-list li { display:flex; gap:8px; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid #e7eef0 }
+  .node-list li strong { overflow-wrap:anywhere }
+  .node-list li .sub { margin-top:2px }
+  .node-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end }
+  .node-actions .secondary,.node-add .secondary { font-size:12px }
+  .node-add { padding-top:10px }
+  .node-add summary { display:list-item; padding:4px 0; color:var(--teal); font-size:13px }
+  .node-add summary::before { content:none }
+  .node-add form { display:grid; gap:8px; margin-top:7px }
+  .job-card { padding:17px 22px; margin-bottom:16px }
+  .job-card h2 { font-size:17px }
+  .job-list { display:grid; gap:6px; max-height:220px; overflow:auto; margin-top:10px; padding:2px }
+  .job { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; padding:8px 10px; background:#f7f9f9; text-align:left; text-decoration:none; border:1px solid #e4ebed; border-radius:7px; color:var(--ink) }
+  .job:hover { border-color:#8abcad }
+  .job strong,.job small { display:block }
+  .job small { color:var(--muted); margin-top:2px; overflow-wrap:anywhere }
+  .field-note { color:var(--muted); margin-top:5px; font-size:12px }
+  .field-title { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px }
+  .field-title label { margin:0 }
+  .field-title .secondary { font-size:12px; padding:3px 8px; min-height:28px }
+  .job-meta { display:flex; align-items:center; gap:9px }
+  .job-meta .details-link { color:var(--teal); font-size:12px; font-weight:700; white-space:nowrap }
+  .detail-view { max-width:940px; margin:auto }
+  .back { display:inline-block; color:var(--teal); text-decoration:none; font-weight:650; margin-bottom:11px }
+  .back:hover { text-decoration:underline }
+  .header-actions { display:flex; align-items:center; gap:13px }
+  .header-actions a { color:#e2f5ee; font-size:12px; text-decoration:none; white-space:nowrap }
+  .header-actions a:hover { text-decoration:underline }
+  .mode-select { margin-top:14px }
+  .mode-select label { padding:7px 4px }
+  .wizard-layout { display:grid; grid-template-columns:1.15fr 1fr; gap:16px }
+  .wizard-panel { padding:22px }
+  .wizard-actions { display:flex; align-items:center; gap:8px; margin-top:15px; flex-wrap:wrap }
+  .wizard-actions .primary { width:auto }
+  .dependency-list { list-style:none; margin:13px 0 0; padding:0 }
+  .dependency-list li { display:flex; gap:10px; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere }
+  .dependency-list .mono { font-size:12px }
+  .sample-link { font-size:12px; min-height:28px; padding:3px 8px }
+  .setting-link { color:var(--teal); font-size:12px; font-weight:650; text-decoration:none }
+  .setting-link:hover { text-decoration:underline }
+  @media(max-width:700px) {
+    .wizard-layout { grid-template-columns:minmax(0,1fr) }
+    .header-actions { gap:8px }
+  }
+  .table-wrap { overflow-x:auto }
+  table { border-collapse:collapse; width:100%; text-align:left; font-size:13px; min-width:490px }
+  th,td { padding:8px 13px; border-top:1px solid #e7eef0 }
+  th:first-child,td:first-child { padding-left:19px }
+  th:last-child,td:last-child { padding-right:19px }
+  th { background:#f5f8f9; color:#526772; font-weight:650; font-size:12px; white-space:nowrap }
+  td:first-child { white-space:nowrap; color:#2c5a60 }
+  td:nth-child(3) { white-space:nowrap; font-size:12px; color:#566973 }
+  tr.running td { background:#eef7f5 }
+  .log { margin-top:16px }
+  summary { cursor:pointer; list-style:none; padding:13px 19px; display:flex; align-items:center; gap:7px; font-weight:700 }
+  summary::-webkit-details-marker { display:none }
+  summary::before { content:"›"; font-size:20px; line-height:1; color:var(--teal); transform-origin:center; margin-right:2px }
+  details[open] summary::before { transform:rotate(90deg) }
+  summary .sub { margin:0 0 0 auto; font-weight:400 }
+  #logEntries { max-height:280px; overflow:auto; padding:8px 18px 14px; border-top:1px solid var(--line) }
+  .entry { display:grid; grid-template-columns:65px minmax(0,1fr); gap:8px; padding:7px 0; border-bottom:1px solid #e7eef0; font-size:13px }
+  .entry time { color:var(--muted); font-size:12px }
+  .entry p { white-space:pre-wrap; overflow-wrap:anywhere }
+  .empty { color:var(--muted); padding:8px 0; font-size:13px }
+  @media(max-width:900px) {
+    .layout { grid-template-columns:minmax(255px,285px) minmax(0,1fr); gap:14px }
+    .config,.run { padding:17px }
+    main,.top { padding-left:18px; padding-right:18px }
+  }
+  @media(max-width:700px) {
+    .layout { grid-template-columns:minmax(0,1fr) }
+    main { padding-top:15px }
+    .intro { align-items:flex-start; padding:18px; margin-bottom:14px }
+    .intro p { font-size:12px }
+    .top { min-height:55px }
+    .worker { font-size:11px }
+  }
+  @media(prefers-reduced-motion:no-preference) {
+    progress::-webkit-progress-value { transition:width .25s ease }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <div class="brand"><span class="mark">K1</span> K1 验收台</div>
+    <div class="header-actions">
+      <div class="worker"><span id="workerDot" class="dot"></span><span id="workerOnline"></span></div>
+      <a href="#setup" id="setupLink">配置向导</a>
+    </div>
+  </div>
+</header>
+<main>
+  <section id="setupView" class="detail-view" aria-labelledby="setupTitle" hidden>
+    <a href="#dashboard" id="setupBack" class="back" hidden>← 返回验收台</a>
+    <div class="intro">
+      <div><h1 id="setupTitle" tabindex="-1">配置向导</h1><p>为执行节点配置三端工程位置，确认验收所需依赖。</p></div>
+      <span class="demo">模拟模式</span>
+    </div>
+    <div class="wizard-layout">
+      <form id="setupForm" class="card wizard-panel">
+        <h2>节点与工程目录</h2>
+        <div class="field"><label for="setupNode">执行节点</label><select id="setupNode"></select></div>
+        <div class="field">
+          <div class="field-title"><label for="projectRoot">三端工程根目录</label><button type="button" class="secondary sample-link" id="samplePath">填入示例路径</button></div>
+          <input id="projectRoot" type="text" required maxlength="250" placeholder="/Volumes/Work/K1">
+          <p class="field-note">填节点本机的路径。客户端、服务端和配表共用这一个根目录。</p>
+        </div>
+        <div class="wizard-actions">
+          <button type="submit" class="secondary" id="checkSetup">检查配置</button>
+          <button type="button" class="primary" id="saveSetup" disabled>保存并进入验收台</button>
+        </div>
+        <p class="field-note" id="setupStatus" role="status">填写工程目录后，运行模拟检查。</p>
+      </form>
+      <section class="card wizard-panel" aria-labelledby="checkTitle">
+        <h2 id="checkTitle">启动检查</h2>
+        <ul class="dependency-list" id="checkItems"></ul>
+      </section>
+    </div>
+  </section>
+  <div id="dashboard">
+  <section class="intro" aria-labelledby="pageTitle">
+    <div><h1 id="pageTitle">K1 验收</h1><p>提交版本日或功能分支验收，查看执行节点与批次进度。</p></div>
+    <span class="demo">模拟模式</span>
+  </section>
+  <div class="layout">
+    <div>
+    <form class="card config" id="runForm" aria-labelledby="formTitle">
+      <h2 id="formTitle">验收配置</h2>
+      <fieldset class="mode-select">
+        <legend class="legend">验收模式</legend>
+        <div class="seg">
+          <label><input type="radio" name="mode" value="version" checked>版本日验收</label>
+          <label><input type="radio" name="mode" value="branch">分支验收</label>
+        </div>
+      </fieldset>
+      <fieldset id="parameters">
+        <fieldset id="versionFields">
+        <div class="field">
+          <div class="field-title"><label for="sheet">进包表页签</label><button type="button" class="secondary" id="refreshSheets">刷新页签</button></div>
+          <select id="sheet" name="sheet"></select>
+          <p class="field-note" id="sheetStatus" role="status"></p>
+        </div>
+        <fieldset class="field">
+          <legend class="legend">目标分支</legend>
+          <div class="seg">
+            <label class="mono"><input type="radio" name="branch" value="dev" checked>dev</label>
+            <label class="mono"><input type="radio" name="branch" value="qa">qa</label>
+          </div>
+        </fieldset>
+        </fieldset>
+        <fieldset id="branchFields" hidden disabled>
+          <div class="field">
+            <div class="field-title"><label for="featureBranch">目标功能分支</label><button type="button" class="secondary sample-link" id="sampleBranch">填入示例</button></div>
+            <input class="mono" id="featureBranch" name="featureBranch" type="text" required maxlength="100" placeholder="例如 dev_NK-12345">
+          </div>
+          <div class="field"><label for="source">Jira 单号或需求来源</label><input id="source" name="source" type="text" required maxlength="300" placeholder="输入 Jira 单号或需求链接"></div>
+          <details class="node-add">
+            <summary>单独设置三端分支</summary>
+            <div class="field-note">默认三端使用上面的功能分支。</div>
+            <div class="field"><label for="clientBranch">客户端分支</label><input type="text" id="clientBranch" name="clientBranch" maxlength="100" placeholder="沿用目标功能分支"></div>
+            <div class="field"><label for="gameBranch">服务端分支</label><input type="text" id="gameBranch" name="gameBranch" maxlength="100" placeholder="沿用目标功能分支"></div>
+            <div class="field"><label for="dataBranch">配表分支</label><input type="text" id="dataBranch" name="dataBranch" maxlength="100" placeholder="沿用目标功能分支"></div>
+          </details>
+        </fieldset>
+        <div class="pair field">
+          <div><label for="method">测试方式</label><select id="method" name="method"><option>Unity</option><option>真机</option></select></div>
+          <div><label for="server">服务器 ID</label><input id="server" name="server" type="text" placeholder="选填" value="2903"></div>
+        </div>
+        <div class="field">
+          <label for="notes">补充要求 <span class="sub">（选填）</span></label>
+          <textarea id="notes" name="notes" placeholder="例如：优先检查新增活动的奖励领取"></textarea>
+        </div>
+        <div class="field row">
+          <label class="check"><input type="checkbox" name="refresh">刷新配置</label>
+          <label class="check"><input type="checkbox" name="deploy">部署测试服</label>
+        </div>
+        <div class="field">
+          <label for="assignedNode">执行节点</label>
+          <select id="assignedNode" name="assignedNode"></select>
+          <p class="field-note" id="assignmentHint"></p>
+        </div>
+      </fieldset>
+      <div class="preview">
+        <strong id="previewTotal"></strong>
+        <p id="previewRule"></p>
+      </div>
+      <button class="primary" type="submit">提交模拟验收</button>
+      <p id="submitStatus" class="field-note" role="status"></p>
+    </form>
+    </div>
+    <div>
+    <section class="card job-card" aria-labelledby="jobTitle">
+      <div class="title-line"><h2 id="jobTitle">运行队列</h2><p class="sub" id="queueSummary"></p></div>
+      <div class="job-list" id="jobList"></div>
+    </section>
+    <section class="card nodes" aria-labelledby="nodesTitle">
+      <div class="title-line"><h2 id="nodesTitle">执行节点</h2><p class="sub" id="nodeSummary"></p></div>
+      <ul class="node-list" id="nodeList"></ul>
+      <details class="node-add" id="nodeAdd">
+        <summary>＋ 添加节点</summary>
+        <form id="nodeForm">
+          <div><label for="nodeName">节点名称</label><input id="nodeName" name="nodeName" type="text" required maxlength="28" placeholder="例如 Mac-03"></div>
+          <div><label for="nodePlatform">操作系统</label><select id="nodePlatform" name="nodePlatform"><option>macOS</option><option>Windows</option></select></div>
+          <div><label for="capability">支持的测试方式</label><select id="capability" name="capability"><option>Unity</option><option>真机</option><option>Unity + 真机</option></select></div>
+          <button type="submit" class="secondary">添加模拟节点</button>
+        </form>
+      </details>
+    </section>
+    </div>
+  </div>
+  </div>
+    <section class="detail-view" id="detailView" aria-labelledby="detailTitle" hidden>
+      <a href="#dashboard" class="back" id="backToQueue">← 返回运行队列</a>
+      <div class="intro">
+        <div><h1 id="detailTitle" tabindex="-1">验收批次</h1><p id="detailContext"></p></div>
+        <span class="demo">模拟模式</span>
+      </div>
+      <section class="card run" aria-labelledby="runTitle">
+        <div class="title-line">
+          <div><h2 id="runTitle">运行进度</h2><p class="sub" id="runContext">等待提交验收配置</p></div>
+          <span class="pill" id="runStatus" role="status">未开始</span>
+        </div>
+        <ol class="steps" id="steps">
+          <li><span class="step-icon"></span>填写要求</li>
+          <li><span class="step-icon"></span>节点接单</li>
+          <li><span class="step-icon"></span>逐单验收</li>
+          <li><span class="step-icon"></span><span id="finalStep">汇总回写</span></li>
+        </ol>
+        <div class="progress-head"><span id="progressLabel">已处理</span><span id="count" class="mono"></span></div>
+        <progress id="progress" aria-labelledby="progressLabel" value="0"></progress>
+        <div class="stats">
+          <div class="stat"><b id="passCount">0</b>通过</div>
+          <div class="stat"><b id="failCount">0</b>未通过</div>
+          <div class="stat"><b id="reviewCount">0</b>待补验</div>
+          <div class="stat"><b id="waitingCount">0</b>待处理</div>
+        </div>
+        <div class="current">
+          <div><strong id="currentTitle">等待开始</strong><p id="currentDescription">提交后，页面会显示当前步骤和执行机心跳。</p></div>
+          <button type="button" class="secondary" id="connectionButton" hidden>模拟掉线</button>
+        </div>
+      </section>
+
+      <details class="card log" id="log">
+        <summary><span id="logToggle">展开 AI 输出</span><span class="sub" id="logCount">0 条</span></summary>
+        <div id="logEntries" tabindex="0" aria-label="模拟 AI 输出记录"></div>
+      </details>
+      <section class="card list" aria-labelledby="queueTitle">
+        <div class="list-head"><h2 id="queueTitle">验收清单</h2><p class="sub" id="queueNote"></p></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col" id="issueColumn">事项</th><th scope="col">验收内容</th><th scope="col">方式</th><th scope="col">状态</th></tr></thead>
+            <tbody id="issues"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+</main>
+<script>
+  const demoIssues = [
+    {key:"DEMO-101", title:"新手引导入口", method:"测试用例", result:"pass", note:"新账号完成触发和跳转，2 条用例通过。"},
+    {key:"DEMO-102", title:"联盟帮助次数显示", method:"测试用例", result:"pass", note:"帮助前后计数均与预期一致。"},
+    {key:"DEMO-103", title:"邮件附件批量领取", method:"测试用例", result:"fail", note:"三封邮件领取后，第二封仍显示未领取。已记录复现步骤。"},
+    {key:"DEMO-104", title:"活动首页布局", method:"玩家体验", result:"pass", note:"入口、倒计时与跳转均符合本轮验收要求。"},
+    {key:"DEMO-105", title:"战报分享入口", method:"玩家体验", result:"review", note:"入口已确认，跨服分享条件仍需补验。"},
+    {key:"DEMO-106", title:"商城礼包预览", method:"玩家体验", result:"pass", note:"预览内容与模拟配置一致。"}
+  ];
+  const sheets = {"599":demoIssues,"600":demoIssues.slice(2),"601":demoIssues.slice(0,3)};
+  const branchCases = [
+    {key:"TC-01",title:"活动入口与开启状态",method:"测试用例",result:"pass",note:"活动开启时展示入口，进入后活动配置与预期一致。"},
+    {key:"TC-02",title:"领取奖励与重复提交",method:"测试用例",result:"fail",note:"首次领取成功，重复提交时客户端仍显示可领取。"},
+    {key:"TC-03",title:"活动结束后的界面状态",method:"测试用例",result:"review",note:"入口状态已核对，结束后跨日登录行为待补验。"}
+  ];
+  const states = {pass:"通过",fail:"未通过",review:"待补验"};
+  const storageKey = "k1-acceptance-demo-v3";
+  const byId = id => document.getElementById(id);
+  const set = (id,value) => { byId(id).textContent = value; };
+  const form = byId("runForm");
+  const timeFormat = new Intl.DateTimeFormat("zh-CN",{hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"});
+  const phases = {
+    queued:["排队中","review"],claimed:["已接单","active"],prepare:["准备中","active"],
+    testing:["验收中","active"],report:["汇总中","active"],paused:["节点离线","review"],done:["已完成","pass"]
+  };
+  const state = readState();
+  let displayedLog;
+  let assignmentSignature;
+  let sheetSignature;
+  let refreshingSheets = false;
+  let setupCheck;
+  let setupNodeId = 1;
+  const sourceLabel = config => config.mode === "branch" ? "分支验收" : "版本日验收";
+  const route = () => location.hash;
+
+  function readState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey));
+      if (Array.isArray(saved?.nodes) && Array.isArray(saved.jobs)) return saved;
+    } catch {}
+    return {
+      availableSheets:["599","600"],
+      sheetFetchedAt:null,
+      nextJob:1,
+      nodes:[
+        {id:1,name:"Mac M4",platform:"macOS",capability:"Unity",online:true,lastSeen:Date.now(),skillReady:false},
+        {id:2,name:"Windows-01",platform:"Windows",capability:"Unity + 真机",online:false,lastSeen:null,skillReady:false}
+      ],
+      jobs:[]
+    };
+  }
+  function save() {
+    try { localStorage.setItem(storageKey,JSON.stringify(state)); } catch {}
+  }
+  function getNode(id) {
+    return state.nodes.find(node => node.id === id);
+  }
+  function activeJob(nodeId) {
+    return state.jobs.find(job => job.nodeId === nodeId && job.phase !== "done");
+  }
+  function supports(node,method) {
+    return node.capability === "Unity + 真机" || node.capability === method;
+  }
+  function hasConfig() {
+    return state.nodes.some(node => node.projectRoot);
+  }
+  function ready(node) {
+    return node.online && node.projectRoot && node.skillReady;
+  }
+  function settings() {
+    const data = new FormData(form);
+    const mode = data.get("mode");
+    const branch = mode === "branch" ? data.get("featureBranch").trim() : data.get("branch");
+    return {
+      mode,sheet:data.get("sheet"),branch,method:data.get("method"),
+      source:data.get("source")?.trim(),
+      refs:mode === "branch" ? ["clientBranch","gameBranch","dataBranch"].map(key => data.get(key).trim() || branch) : null,
+      server:data.get("server").trim(),notes:data.get("notes").trim(),
+      refresh:data.has("refresh"),deploy:data.has("deploy"),
+      assignedNode:Number(data.get("assignedNode")) || null
+    };
+  }
+  function addLog(job,message,now) {
+    job.logs.push({time:now,message});
+  }
+  function issueList(job) {
+    return job.config.mode === "branch" ? branchCases : sheets[job.config.sheet];
+  }
+  function submitJob() {
+    const now = Date.now();
+    const config = settings();
+    const job = {
+      id:state.nextJob++,config,phase:"queued",index:0,nodeId:null,
+      logs:[],nextAt:now + 1000
+    };
+    const target = getNode(config.assignedNode);
+    addLog(job,target ? `已进入队列，等待指定节点 ${target.name}。` : "已进入队列，等待自动分配可用节点。",now);
+    state.jobs.push(job);
+    commit();
+    set("submitStatus",`已提交批次 #${job.id}，在运行队列中打开详情。`);
+  }
+  function claim(job,node,now) {
+    job.nodeId = node.id;
+    job.phase = "claimed";
+    job.nextAt = now + 1100;
+    job.projectRoot = node.projectRoot;
+    const {mode,sheet,source,branch,method,server,notes,refresh,deploy} = job.config;
+    const scope = mode === "branch" ? `需求来源 ${source}` : `进包表页签 ${sheet}`;
+    addLog(job,`${node.name} 已接单。 ${scope} · ${branch} · ${method}${server ? " · 服务器 " + server : ""}`,now);
+    addLog(job,`执行选项。刷新配置${refresh ? "开启" : "关闭"}，部署测试服${deploy ? "开启" : "关闭"}。${notes ? "\n补充要求：" + notes : ""}`,now);
+  }
+  function advance(job,now) {
+    const queue = issueList(job);
+    if (job.phase === "claimed") {
+      job.phase = "prepare";
+      job.nextAt = now + 1700;
+      addLog(job,"正在核对工程、分支和测试环境。",now);
+    } else if (job.phase === "prepare") {
+      job.phase = "testing";
+      addLog(job,`前置检查完成，${queue.length} 项开始验收。`,now);
+      if (job.config.mode === "branch") {
+        const [client,game,data] = job.config.refs;
+        addLog(job,`已模拟核对三端目标版本。\n客户端 ${client}\n服务端 ${game}\n配表 ${data}`,now);
+      } else if (job.config.branch === "qa") addLog(job,"已模拟核对候选事项的改动是否进入 qa。",now);
+      startIssue(job,queue[job.index],now);
+    } else if (job.phase === "testing") {
+      const issue = queue[job.index];
+      const writeback = {pass:"模拟回写已完成。",fail:"模拟回写未通过。",review:"保留待补验记录。"};
+      const update = job.config.mode === "version" ? " " + writeback[issue.result] : "";
+      addLog(job,`${issue.key} · ${states[issue.result]}。 ${issue.note}${update}`,now);
+      job.index += 1;
+      if (job.index === queue.length) {
+        job.phase = "report";
+        job.nextAt = now + 1300;
+        addLog(job,"清单处理完毕，正在汇总本轮结论。",now);
+      } else startIssue(job,queue[job.index],now);
+    } else if (job.phase === "report") {
+      job.phase = "done";
+      const count = results(job,queue);
+      addLog(job,`报告已生成。共处理 ${queue.length} 项，通过 ${count.pass} 项，未通过 ${count.fail} 项，待补验 ${count.review} 项。`,now);
+    }
+  }
+  function startIssue(job,issue,now) {
+    job.nextAt = now + 2700;
+    addLog(job,`开始 ${issue.key} · ${issue.title}。按${issue.method}验收。`,now);
+  }
+  function tick() {
+    const now = Date.now();
+    let changed = false;
+    for (const node of state.nodes) {
+      if (node.online && now - node.lastSeen >= 2000) node.lastSeen = now;
+      if (node.online && node.projectRoot && !node.skillReady && now >= node.readyAt) {
+        node.skillReady = true;
+        changed = true;
+      }
+    }
+    for (const job of state.jobs) {
+      if (job.nextAt > now || ["queued","paused","done"].includes(job.phase)) continue;
+      advance(job,now);
+      changed = true;
+    }
+    for (const job of state.jobs) {
+      if (job.phase !== "queued" || job.nextAt > now) continue;
+      const node = state.nodes.find(candidate => (
+        ready(candidate) && supports(candidate,job.config.method) && !activeJob(candidate.id)
+        && (!job.config.assignedNode || job.config.assignedNode === candidate.id)
+      ));
+      if (!node) continue;
+      claim(job,node,now);
+      changed = true;
+    }
+    if (changed) commit();
+    else renderHeartbeat();
+  }
+  function toggleNode(id) {
+    const node = getNode(id);
+    const job = activeJob(id);
+    const now = Date.now();
+    node.online = !node.online;
+    if (node.online) {
+      node.lastSeen = now;
+      if (node.projectRoot && !node.skillReady) node.readyAt = now + 1800;
+      if (job?.phase === "paused") {
+        job.phase = job.resumePhase;
+        job.nextAt = now + Math.max(500,job.remaining);
+        addLog(job,`${node.name} 已重新连接，从当前进度继续。`,now);
+      }
+    } else if (job) {
+      job.resumePhase = job.phase;
+      job.remaining = Math.max(0,job.nextAt - now);
+      job.phase = "paused";
+      addLog(job,`${node.name} 模拟失联，已保存完成项与当前进度。`,now);
+    }
+    commit();
+  }
+  function results(job,queue) {
+    const counts = {pass:0,fail:0,review:0};
+    for (const issue of queue.slice(0,job?.index ?? 0)) counts[issue.result] += 1;
+    return counts;
+  }
+  function waitReason(job) {
+    const target = getNode(job.config.assignedNode);
+    if (target) {
+      if (!target.projectRoot) return `等待配置 ${target.name} 的三端工程目录`;
+      if (!target.online) return `等待 ${target.name} 上线`;
+      if (!target.skillReady) return `等待 ${target.name} 初始化 FunctionReview`;
+      if (activeJob(target.id)) return `等待 ${target.name} 空闲`;
+      return `等待 ${target.name} 接单`;
+    }
+    const matching = state.nodes.filter(node => supports(node,job.config.method));
+    if (!matching.some(node => node.projectRoot)) return "等待配置匹配节点的三端工程目录";
+    if (!matching.some(node => node.online && node.projectRoot)) return `等待支持 ${job.config.method} 的节点上线`;
+    if (!matching.some(ready)) return "等待节点初始化 FunctionReview";
+    return matching.some(node => ready(node) && !activeJob(node.id))
+      ? "等待调度" : `等待支持 ${job.config.method} 的节点空闲`;
+  }
+  function commit() {
+    save();
+    render();
+  }
+  function render() {
+    renderSheets();
+    renderAssignment();
+    renderNodes();
+    renderQueue();
+    renderView();
+  }
+  function renderSheets() {
+    const select = byId("sheet");
+    const signature = state.availableSheets.join(",");
+    if (sheetSignature !== signature) {
+      const previous = select.value;
+      select.replaceChildren(...state.availableSheets.map(sheet => new Option(`${sheet}（示例）`,sheet)));
+      if (state.availableSheets.includes(previous)) select.value = previous;
+      sheetSignature = signature;
+    }
+    byId("refreshSheets").disabled = refreshingSheets;
+    set("refreshSheets",refreshingSheets ? "刷新中…" : "刷新页签");
+    set("sheetStatus",refreshingSheets ? "正在读取进包文档…"
+      : state.sheetFetchedAt ? `已读取 ${state.availableSheets.length} 个模拟页签 · ${timeFormat.format(state.sheetFetchedAt)}`
+      : "进包文档 · 当前显示示例页签");
+  }
+  function refreshSheets() {
+    refreshingSheets = true;
+    renderSheets();
+    setTimeout(() => {
+      state.availableSheets = Object.keys(sheets);
+      state.sheetFetchedAt = Date.now();
+      refreshingSheets = false;
+      commit();
+    },850);
+  }
+  function renderAssignment() {
+    const select = byId("assignedNode");
+    const candidates = state.nodes.filter(node => supports(node,byId("method").value)).map(node => {
+      const status = !node.projectRoot ? "待配置" : !node.online ? "离线" : !node.skillReady ? "初始化中" : activeJob(node.id) ? "忙碌" : "可用";
+      return [`${node.name} · ${status}`,node.id];
+    });
+    const signature = JSON.stringify(candidates);
+    if (signature !== assignmentSignature) {
+      const previous = select.value;
+      select.replaceChildren(new Option("自动分配",""),...candidates.map(args => new Option(...args)));
+      if ([...select.options].some(option => option.value === previous)) select.value = previous;
+      assignmentSignature = signature;
+    }
+    set("assignmentHint",select.value ? "等待该节点可用后执行。" : "由支持所选测试方式的空闲节点接单。");
+    const config = settings();
+    if (config.mode === "branch") {
+      set("previewTotal",config.branch ? `目标分支 ${config.branch}` : "等待填写目标功能分支");
+      set("previewRule","本次演示会执行 3 条模拟测试用例，结果保存在批次报告中。");
+    } else {
+      set("previewTotal",`匹配 ${sheets[config.sheet].length} 条待验收事项`);
+      set("previewRule",config.branch === "qa"
+        ? "待验收且已合进 dev，跳过验收中；执行时核对 qa。"
+        : "待验收且已合进 dev，跳过验收中。");
+    }
+  }
+  function updateMode() {
+    const branch = form.elements.mode.value === "branch";
+    for (const [name,hidden] of [["versionFields",branch],["branchFields",!branch]]) {
+      const fields = byId(name);
+      fields.hidden = hidden;
+      fields.disabled = hidden;
+    }
+    renderAssignment();
+  }
+  function renderNodes() {
+    const online = state.nodes.filter(node => node.online).length;
+    set("workerOnline",`模拟节点 ${online} / ${state.nodes.length} 在线`);
+    byId("workerDot").classList.toggle("offline",online === 0);
+    set("nodeSummary",`${online} 台在线`);
+    const items = state.nodes.map(node => {
+      const job = activeJob(node.id);
+      const item = document.createElement("li");
+      const info = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = node.name;
+      const capability = document.createElement("p");
+      capability.className = "sub";
+      const skillStatus = !node.projectRoot ? "未配置三端目录" : node.skillReady
+        ? "FunctionReview 已就绪" : node.online ? "正在模拟克隆 FunctionReview" : "FunctionReview 待初始化";
+      capability.textContent = `${node.platform} · ${node.capability} · ${skillStatus}`;
+      info.append(title,capability);
+      const actions = document.createElement("div");
+      actions.className = "node-actions";
+      const [label,tone] = !node.projectRoot ? ["待配置","review"] : !node.online ? ["离线","review"] : !node.skillReady ? ["初始化中","active"]
+        : job ? ["忙碌","active"] : ["可用","pass"];
+      const badge = pill(label,tone);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = node.online ? "模拟掉线" : "模拟上线";
+      button.setAttribute("aria-label",`${node.name} ${button.textContent}`);
+      button.addEventListener("click",() => toggleNode(node.id));
+      const configure = document.createElement("a");
+      configure.href = `#setup-${node.id}`;
+      configure.className = "setting-link";
+      configure.textContent = "配置";
+      configure.setAttribute("aria-label",`配置 ${node.name}`);
+      actions.append(badge,configure,button);
+      item.append(info,actions);
+      return item;
+    });
+    byId("nodeList").replaceChildren(...items);
+  }
+  function pill(label,tone) {
+    const badge = document.createElement("span");
+    badge.className = `pill ${tone}`;
+    badge.textContent = label;
+    return badge;
+  }
+  function renderQueue() {
+    const pending = state.jobs.filter(job => job.phase === "queued").length;
+    const finished = state.jobs.filter(job => job.phase === "done").length;
+    set("queueSummary",`排队 ${pending} · 已分配 ${state.jobs.length - pending - finished} · 完成 ${finished}`);
+    const list = byId("jobList");
+    if (!state.jobs.length) {
+      list.textContent = "提交验收后，可在这里查看排队状态和执行节点。";
+      list.classList.add("empty");
+      return;
+    }
+    list.classList.remove("empty");
+    const jobs = [...state.jobs].reverse().map(job => {
+      const button = document.createElement("a");
+      button.href = `#batch-${job.id}`;
+      button.className = "job";
+      const info = document.createElement("span");
+      const heading = document.createElement("strong");
+      const scope = job.config.mode === "branch" ? job.config.branch : `${job.config.sheet} 页签 · ${job.config.branch}`;
+      heading.textContent = `#${job.id} · ${sourceLabel(job.config)} · ${scope}`;
+      const detail = document.createElement("small");
+      const strategy = job.config.assignedNode ? "指定节点" : "自动分配";
+      detail.textContent = job.phase === "queued" ? `${strategy} · ${waitReason(job)}`
+        : `${strategy} · ${getNode(job.nodeId).name} · 已处理 ${job.index}/${issueList(job).length}`;
+      info.append(heading,detail);
+      const meta = document.createElement("span");
+      meta.className = "job-meta";
+      const more = document.createElement("span");
+      more.className = "details-link";
+      more.textContent = "详情 ›";
+      meta.append(pill(...phases[job.phase]),more);
+      button.append(info,meta);
+      return button;
+    });
+    list.replaceChildren(...jobs);
+  }
+  function selectedJob() {
+    const match = /^#batch-(\d+)$/.exec(location.hash);
+    return match ? state.jobs.find(job => job.id === Number(match[1])) : undefined;
+  }
+  function renderView() {
+    const job = selectedJob();
+    const setup = !hasConfig() || /^#setup(?:-\d+)?$/.test(route());
+    byId("setupView").hidden = !setup;
+    byId("setupBack").hidden = !hasConfig();
+    byId("dashboard").hidden = setup || Boolean(job);
+    byId("detailView").hidden = setup || !job;
+    if (!setup && job) renderRun(job);
+  }
+  function renderRun(job) {
+    const config = job.config;
+    const queue = issueList(job);
+    const phase = job.phase;
+    const paused = phase === "paused";
+    const actualPhase = paused ? job.resumePhase : phase;
+    const completed = job.index;
+    const current = queue[completed];
+    const node = getNode(job.nodeId);
+    const count = results(job,queue);
+    const [status,tone] = phases[phase] ?? ["未开始",""];
+    const phaseDisplay = {
+      queued:[waitReason(job),"节点空闲后，按分配方式接单。"],
+      claimed:[`${node?.name} 已接单`,"正在启动验收流程。"],
+      prepare:["检查测试环境","正在核对页签、分支和测试环境。"],
+      testing:[`${current?.key} · ${current?.title}`,`正在执行${current?.method}。`],
+      report:["汇总本轮报告",config.mode === "branch" ? "正在整理用例结果和证据。" : "正在整理结论和模拟回写记录。"],
+      done:["本轮验收已结束","逐单结果可在清单中查看。"],
+      paused:[`${node?.name} 离线，进度已保存`,"节点恢复后将继续当前步骤。"]
+    };
+    const [title,description] = phaseDisplay[phase];
+    set("runStatus",status);
+    byId("runStatus").className = `pill ${tone}`;
+    set("detailTitle",`验收批次 #${job.id}`);
+    const scope = config.mode === "branch" ? config.source : `${config.sheet} 页签`;
+    set("detailContext",`${sourceLabel(config)} · ${scope} · ${config.branch} · ${config.method}${config.server ? " · 服务器 " + config.server : ""}`);
+    set("finalStep",config.mode === "branch" ? "汇总报告" : "汇总回写");
+    set("issueColumn",config.mode === "branch" ? "用例" : "事项");
+    set("queueTitle",config.mode === "branch" ? "测试用例" : "验收清单");
+    set("runContext",node ? `执行节点 ${node.name}` : config.assignedNode ? `指定节点 ${getNode(config.assignedNode).name}` : "自动分配");
+    const stepIndex = {queued:1,claimed:1,prepare:1,testing:2,report:3,done:4}[actualPhase];
+    [...byId("steps").children].forEach((step,index) => {
+      step.className = index < stepIndex ? "done" : index === stepIndex ? "active" : "";
+      step.firstElementChild.textContent = index < stepIndex ? "✓" : index + 1;
+      if (index === stepIndex) step.setAttribute("aria-current","step");
+      else step.removeAttribute("aria-current");
+    });
+    set("count",`${completed} / ${queue.length}`);
+    byId("progress").max = queue.length;
+    byId("progress").value = completed;
+    set("passCount",count.pass);
+    set("failCount",count.fail);
+    set("reviewCount",count.review);
+    set("waitingCount",queue.length - completed);
+    set("currentTitle",title);
+    byId("currentDescription").dataset.base = description;
+    const connection = byId("connectionButton");
+    connection.hidden = !node || phase === "done";
+    set("connectionButton",paused ? "恢复执行节点" : "模拟节点掉线");
+    set("queueNote",`本轮共 ${queue.length} 项`);
+    byId("issues").innerHTML = queue.map((issue,index) => {
+      const running = actualPhase === "testing" && completed === index;
+      const label = index < completed ? states[issue.result] : running ? (paused ? "等待恢复" : "验收中") : "待验收";
+      const style = index < completed ? issue.result : running ? (paused ? "review" : "active") : "";
+      return `<tr class="${running ? "running" : ""}"><td class="mono">${issue.key}</td><td>${issue.title}</td><td>${issue.method}</td><td><span class="pill ${style}">${label}</span></td></tr>`;
+    }).join("");
+    renderLogs(job);
+    renderHeartbeat();
+  }
+  function renderLogs(job) {
+    const logs = job?.logs ?? [];
+    const signature = `${job?.id ?? ""}:${logs.length}`;
+    if (signature === displayedLog) return;
+    displayedLog = signature;
+    set("logCount",`${logs.length} 条`);
+    const entries = byId("logEntries");
+    const follow = entries.scrollHeight - entries.scrollTop - entries.clientHeight < 25;
+    entries.replaceChildren();
+    if (!logs.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "发起验收后，这里会逐段显示模拟 AI 输出。";
+      entries.append(empty);
+    }
+    for (const log of logs) {
+      const entry = document.createElement("div");
+      entry.className = "entry";
+      const time = document.createElement("time");
+      time.className = "mono";
+      time.textContent = timeFormat.format(log.time);
+      const content = document.createElement("p");
+      content.textContent = log.message;
+      entry.append(time,content);
+      entries.append(entry);
+    }
+    if (follow) entries.scrollTop = entries.scrollHeight;
+  }
+  function renderHeartbeat() {
+    const job = selectedJob();
+    if (!job) return;
+    const node = getNode(job?.nodeId);
+    const description = byId("currentDescription");
+    const heartbeat = node?.lastSeen && job.phase !== "done" ? ` · 最近心跳 ${timeFormat.format(node.lastSeen)}` : "";
+    const text = description.dataset.base + heartbeat;
+    if (description.textContent !== text) description.textContent = text;
+  }
+  function loadSetupNode() {
+    const match = /^#setup-(\d+)$/.exec(route());
+    const selected = getNode(match ? Number(match[1]) : setupNodeId) ?? state.nodes[0];
+    setupNodeId = selected.id;
+    const select = byId("setupNode");
+    select.replaceChildren(...state.nodes.map(node => new Option(`${node.name} · ${node.platform}`,node.id)));
+    select.value = selected.id;
+    byId("projectRoot").value = selected.projectRoot ?? "";
+    byId("projectRoot").placeholder = exampleRoot(selected);
+    clearSetupCheck();
+  }
+  function exampleRoot(node) {
+    return node.platform === "Windows" ? "D:\\Projects\\K1" : "/Volumes/Work/K1";
+  }
+  function clearSetupCheck() {
+    setupCheck = null;
+    set("setupStatus","填写三端工程根目录后，运行模拟检查。");
+    renderSetupChecks();
+  }
+  function renderSetupChecks() {
+    const node = getNode(setupNodeId);
+    const check = setupCheck;
+    const expected = [
+      ["K1FunctionReview",node.skillReady ? "已就绪" : check?.valid ? "保存后初始化" : "待初始化",""],
+      ["Git 与 AI 执行入口",check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""],
+      ["钉钉进包表读取",check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""],
+      ["K1Client/k1_client",check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""],
+      ["K1Game/game",check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""],
+      ["K1Dataconfig/dataconfig",check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""]
+    ];
+    for (const [method,name] of [["Unity","Unity Editor / MCP"],["真机","ADB / 测试设备"]]) {
+      if (supports(node,method)) expected.push([name,check?.valid ? "模拟通过" : "待检查",check?.valid ? "pass" : ""]);
+    }
+    const rows = expected.map(([label,status,tone]) => {
+      const row = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = label;
+      if (label.startsWith("K1") && label.includes("/")) name.className = "mono";
+      row.append(name,pill(status,tone));
+      return row;
+    });
+    byId("checkItems").replaceChildren(...rows);
+    byId("saveSetup").disabled = !check?.valid;
+  }
+  function checkSetup() {
+    const root = byId("projectRoot").value.trim();
+    const node = getNode(setupNodeId);
+    const valid = node.platform === "Windows" ? /^[A-Za-z]:[\\/].+/.test(root) : /^\/[^/]/.test(root);
+    setupCheck = {valid,root,nodeId:node.id};
+    set("setupStatus",valid ? "模拟检查已通过，可以保存配置。" : `请输入 ${node.platform} 节点上的绝对路径，例如 ${exampleRoot(node)}。`);
+    renderSetupChecks();
+  }
+  function saveSetup() {
+    if (!setupCheck?.valid) return;
+    const node = getNode(setupCheck.nodeId);
+    node.projectRoot = setupCheck.root;
+    if (node.online && !node.skillReady) node.readyAt = Date.now() + 1800;
+    commit();
+    location.hash = "#dashboard";
+  }
+  form.addEventListener("submit",event => {
+    event.preventDefault();
+    const config = settings();
+    if (config.mode === "branch" && (!config.branch || !config.source || config.refs.some(ref => /\s/.test(ref)))) {
+      set("submitStatus","请填写有效的功能分支和需求来源。分支名不能包含空格。");
+      return;
+    }
+    submitJob();
+  });
+  form.addEventListener("change",updateMode);
+  byId("featureBranch").addEventListener("input",renderAssignment);
+  byId("sampleBranch").addEventListener("click",() => {
+    byId("featureBranch").value = "dev_NK-12345";
+    byId("source").value = "NK-12345";
+    renderAssignment();
+  });
+  byId("refreshSheets").addEventListener("click",refreshSheets);
+  window.addEventListener("hashchange",() => {
+    byId("log").open = false;
+    renderView();
+    window.scrollTo(0,0);
+    if (!byId("setupView").hidden) {
+      loadSetupNode();
+      byId("setupTitle").focus({preventScroll:true});
+    } else if (selectedJob()) byId("detailTitle").focus({preventScroll:true});
+  });
+  byId("setupNode").addEventListener("change",event => {
+    setupNodeId = Number(event.currentTarget.value);
+    location.hash = `#setup-${setupNodeId}`;
+  });
+  byId("projectRoot").addEventListener("input",clearSetupCheck);
+  byId("samplePath").addEventListener("click",() => {
+    byId("projectRoot").value = exampleRoot(getNode(setupNodeId));
+    clearSetupCheck();
+  });
+  byId("setupForm").addEventListener("submit",event => { event.preventDefault(); checkSetup(); });
+  byId("saveSetup").addEventListener("click",saveSetup);
+  byId("connectionButton").addEventListener("click",() => toggleNode(selectedJob().nodeId));
+  byId("log").addEventListener("toggle",event => {
+    set("logToggle",event.currentTarget.open ? "收起 AI 输出" : "展开 AI 输出");
+  });
+  byId("nodeForm").addEventListener("submit",event => {
+    event.preventDefault();
+    const nodeForm = event.currentTarget;
+    const data = new FormData(nodeForm);
+    const name = data.get("nodeName").trim();
+    if (!name || state.nodes.some(node => node.name.toLowerCase() === name.toLowerCase())) {
+      byId("nodeName").setCustomValidity(name ? "节点名称已存在。" : "请输入节点名称。");
+      byId("nodeName").reportValidity();
+      return;
+    }
+    const id = Math.max(...state.nodes.map(node => node.id)) + 1;
+    state.nodes.push({id,name,platform:data.get("nodePlatform"),capability:data.get("capability"),online:false,lastSeen:null,skillReady:false});
+    nodeForm.reset();
+    byId("nodeAdd").open = false;
+    commit();
+  });
+  byId("nodeName").addEventListener("input",event => event.currentTarget.setCustomValidity(""));
+  render();
+  if (!byId("setupView").hidden) loadSetupNode();
+  setInterval(tick,300);
+</script>
+</body>
+</html>
