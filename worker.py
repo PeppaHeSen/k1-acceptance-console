@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,47 @@ def save_json(path, data):
         finally:
             file.close()
             temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def acceptance_checkout(repo, sha, run):
+    def git(*args, timeout=60):
+        return command(["git", *args], cwd=repo, timeout=timeout).stdout.strip()
+
+    def restore_tracked():
+        git("restore", "--source=HEAD", "--staged", "--worktree", "--", ".", timeout=600)
+
+    project = repo / "client"
+    if (project / "Temp" / "UnityLockfile").exists():
+        raise RuntimeError("配置的 Unity 工程已打开，请先关闭该工程再发起验收。")
+    for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"):
+        state = Path(git("rev-parse", "--path-format=absolute", "--git-path", marker))
+        if state.exists():
+            raise RuntimeError("客户端仓库有待完成的 Git 操作，请先处理后再验收。")
+    original = git("rev-parse", "HEAD")
+    branch = command(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo).stdout.strip()
+    checkpoint = {"repository": str(repo), "original": original, "branch": branch, "target": sha}
+    save_json(run / "workspace.json", checkpoint)
+    restore_tracked()
+    try:
+        git("switch", "--no-overwrite-ignore", "--detach", sha, timeout=900)
+        if git("rev-parse", "HEAD") != sha:
+            raise RuntimeError("配置的客户端工程未切到目标提交。")
+        yield project
+    finally:
+        if (project / "Temp" / "UnityLockfile").exists():
+            raise RuntimeError("Unity 工程仍在使用，请关闭后按 workspace.json 恢复。")
+        if git("rev-parse", "HEAD") not in {sha, original}:
+            raise RuntimeError("客户端提交在验收期间发生变更，请按 workspace.json 核对。")
+        if branch != "HEAD" and git("rev-parse", "--verify", f"refs/heads/{branch}") != original:
+            raise RuntimeError("原分支在验收期间发生变更，请按 workspace.json 核对。")
+        restore_tracked()
+        args = ("--detach", original) if branch == "HEAD" else ("--", branch)
+        git("switch", "--no-overwrite-ignore", *args, timeout=900)
+        if git("rev-parse", "HEAD") != original or git("status", "--porcelain", "--untracked-files=no"):
+            raise RuntimeError("工程恢复结果与验收前不一致，请检查 workspace.json。")
+        checkpoint["restored"] = True
+        save_json(run / "workspace.json", checkpoint)
 
 
 class Node:
@@ -169,6 +211,9 @@ class Node:
                 if editor and editor.is_file() and (editor_project / "ProjectSettings").is_dir():
                     self.checks.append({"label": "Unity", "ok": True, "detail": str(editor_project)})
                     self.caps.append("Unity")
+                    if self.os_name == "macOS" and self.config.get("unity_runtime"):
+                        self.checks.append({"label": "Mac 分支运行验收", "ok": True,
+                                            "detail": "填写测试服 ID 后使用已配置的 Unity 工程"})
                 else:
                     self.checks.append({"label": "Unity", "ok": False, "detail": "检查 Unity Editor 路径和客户端项目。"})
             if "真机" in methods:
@@ -296,6 +341,11 @@ class Node:
         self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": []}
         self.persist()
         try:
+            config = job["config"]
+            if (self.os_name == "macOS" and self.config.get("unity_runtime")
+                    and config["mode"] == "branch" and config["method"] == "Unity" and config["server"]):
+                self.execute_unity(job, Path(root))
+                return
             self.event("stage_changed", text="正在核对技能与三端 Git 版本")
             skill, sha, fresh = self.sync_skill(self.check_skill())
             versions = self.versions(root, job["config"])
@@ -325,9 +375,94 @@ class Node:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             print(f"Execution {job['id']} needs review: {type(error).__name__}", flush=True)
             detail = str(error) if type(error) is RuntimeError else "执行准备失败，请核对团队技能仓库及工程连接。"
-            self.event("execution_error", text=detail, process_exited=True)
+            self.event("execution_error", text=detail, process_exited=not self.attempt.get("pid"))
             self.attempt["review"] = True
             self.persist()
+
+    def execute_unity(self, job, root):
+        config = job["config"]
+        if not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
+            raise RuntimeError("请填写有效的测试服 ID。")
+        ref = config["refs"]["client"]
+        repo = (root / REPOS["client"]).resolve()
+        run = self.state.resolve() / "runtime" / job["attempt"]
+        run.mkdir(parents=True, mode=0o700)
+        self.event("stage_changed", text=f"正在准备客户端分支 {ref}"[:200])
+        try:
+            sha = command(["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{ref}"],
+                          cwd=repo, timeout=30).stdout.split()[0]
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise ValueError("Invalid client commit")
+        except (subprocess.SubprocessError, IndexError, ValueError) as error:
+            raise RuntimeError(f"无法读取客户端分支 {ref}。") from error
+        try:
+            command(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo)
+        except subprocess.CalledProcessError:
+            command(["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha],
+                    cwd=repo, timeout=600)
+        self.event("stage_changed", text=f"正在还原验收工程并切换至 {sha[:12]}")
+        with acceptance_checkout(repo, sha, run) as project:
+            exit_code = self.launch_unity(job, sha, project, run)
+            self.event("stage_changed", text="正在还原验收改动并切回原客户端分支")
+        report = self.unity_result(run, config, sha, exit_code)
+        for item in job["items"]:
+            self.event("item_finished", key=item["key"], result=report["result"], evidence=report)
+        self.event("execution_finished", process_exited=True, conclusion="Unity 实测结束，原工程已恢复",
+                   writeback_enabled=False)
+        self.attempt["finished"] = True
+        self.persist()
+
+    def launch_unity(self, job, sha, project, run):
+        config = job["config"]
+        ref = config["refs"]["client"]
+        if not (project / "ProjectSettings" / "ProjectVersion.txt").is_file():
+            raise RuntimeError("目标提交缺少 Unity 工程。")
+        editor = Path(self.config["unity_editor"])
+        version = project.joinpath("ProjectSettings/ProjectVersion.txt").read_text(encoding="utf-8")
+        expected = re.search(r"^m_EditorVersion:\s*(\S+)", version, re.MULTILINE)
+        if not expected or expected[1] not in editor.parts:
+            raise RuntimeError("节点配置的 Unity 版本与目标工程要求不一致。")
+        manifest = {"batch": job["id"], "attempt": job["attempt"], "source": config["source"],
+                    "server": config["server"], "client": sha, "project": str(project),
+                    "reference_branches": config["refs"], "notes": config["notes"]}
+        save_json(run / "runtime.json", manifest)
+        self.event("execution_started", contract_version=API_VERSION, root=str(project),
+                   versions={"client": {"branch": ref, "target": sha, "local": sha}},
+                   runtime={"server": config["server"], "manifest": str(run / "runtime.json")})
+        self.event("stage_changed", text="正在启动 Unity 并导入目标工程")
+        with (run / "launch.log").open("ab") as log:
+            launch = subprocess.Popen(
+                ["/usr/bin/open", "-n", "-W", "-a", str(editor.parents[2]), "--args",
+                 "-projectPath", str(project), "-logFile", str(run / "unity.log")],
+                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            )
+        self.attempt["pid"] = launch.pid
+        self.persist()
+        ready = False
+        while launch.poll() is None:
+            if not ready and (run / "unity.log").is_file():
+                ready = True
+                self.event("stage_changed", text=f"Unity 已启动 · 等待在 {config['server']} 服实测")
+            self.stop.wait(3)
+        self.attempt.pop("pid", None)
+        self.persist()
+        return launch.returncode
+
+    @staticmethod
+    def unity_result(run, config, sha, exit_code):
+        report_path = run / "result.json"
+        if exit_code or not report_path.is_file():
+            raise RuntimeError("Unity 已退出。请核对节点运行日志和验收回执。")
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if (not isinstance(report, dict) or report.get("server") != config["server"]
+                    or report.get("client") != sha or report.get("result") not in {"pass", "fail", "blocked"}
+                    or not isinstance(report.get("reason"), str) or not 0 < len(report["reason"].strip()) <= 2000
+                    or not isinstance(report.get("evidence"), str) or not 0 < len(report["evidence"].strip()) <= 1000):
+                raise ValueError("Invalid acceptance report")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("回执缺少目标服、客户端提交或实测证据，请核对后结束批次。") from error
+        return report
 
     def run(self):
         heartbeat = threading.Thread(target=self.loop_heartbeat, daemon=True)

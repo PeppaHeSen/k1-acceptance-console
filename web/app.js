@@ -168,7 +168,8 @@ async function refreshJob(id, generation) {
     const job = await api("jobs/" + id);
     if (generation !== detailGeneration) return;
     set("detailTitle",`验收批次 #${job.id}`);
-    set("context",modeSummary(job.config) + " · " + (job.node_name || "等待节点"));
+    set("context",[modeSummary(job.config),job.node_name || "等待节点",
+      job.config.server ? job.config.server + " 服" : ""].filter(Boolean).join(" · "));
     set("state",stateNames[job.state] || job.state);
     set("stage",job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
@@ -212,7 +213,9 @@ function renderRoute() {
     const line = document.createElement("p");
     line.style.whiteSpace = "pre-wrap";
     line.textContent = payload.text || payload.conclusion || (data.kind === "execution_started"
-      ? "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
+      ? payload.runtime
+        ? `Unity 工程 ${payload.root}\n客户端提交 ${payload.versions.client.target}\n验收交接文件 ${payload.runtime.manifest}`
+        : "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
       : `${payload.key || ""} ${resultNames[payload.result] || ""}`.trim() || data.kind);
     byId("logEntries").append(line);
     if (data.kind !== "ai_output") refreshJob(id,generation);

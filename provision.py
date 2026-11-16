@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument("--node-root", type=Path)
     parser.add_argument("--unity-editor", type=Path)
+    parser.add_argument("--unity-runtime", action="store_true",
+                        help="Enable isolated Unity branch runs on a Mac with a desktop session")
     parser.add_argument("--claude")
     parser.add_argument("--join-url", help="HTTPS address of the main server for a node-only install")
     parser.add_argument("--node-id", help="Use an existing manually issued node identifier")
@@ -50,7 +52,7 @@ def main():
             "state": str(root / "node-state"), "skill": str(root / "K1FunctionReview"),
             "skill_remote": "https://github.com/RehearsalTap4Fun/K1FunctionReview.git",
             "unity_editor": str(args.unity_editor.resolve()) if args.unity_editor else None,
-            "claude": args.claude, "methods": args.method or ["Unity"],
+            "claude": args.claude, "methods": args.method or ["Unity"], "unity_runtime": args.unity_runtime,
             "ca_cert": str(args.ca_cert.resolve()) if args.ca_cert else None,
         })
         print(f"Node configuration saved to {root / 'node.json'}")
@@ -66,7 +68,7 @@ def main():
                     skill=str(root / "K1FunctionReview"),
                     skill_remote="https://github.com/RehearsalTap4Fun/K1FunctionReview.git",
                     unity_editor=str(args.unity_editor) if args.unity_editor else None,
-                    claude=args.claude, methods=["Unity"])
+                    claude=args.claude, methods=["Unity"], unity_runtime=args.unity_runtime)
         private_file(root / "node.json", node)
     print(f"Runtime configuration saved to {root}")
 
