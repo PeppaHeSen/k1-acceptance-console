@@ -194,6 +194,10 @@
           <button type="submit" class="secondary">确认结束</button>
         </form>
       </section>
+      <nav class="detail-jump" aria-label="批次详情导航">
+        <button type="button" class="secondary" data-detail-jump="checklist">验收清单</button>
+        <button type="button" class="secondary" data-detail-jump="logsPanel">AI 输出</button>
+      </nav>
       <section class="card list" id="checklist">
         <div class="list-head"><h2 id="checklistTitle">验收清单</h2></div>
         <div class="table-wrap" role="region" aria-labelledby="checklistTitle" tabindex="0">
@@ -212,6 +216,14 @@
         <div id="logEntries" role="log" aria-label="带时间的执行记录" tabindex="0"></div>
       </section>
     </section>
+    <dialog id="evidenceDialog" aria-labelledby="evidenceHeading">
+      <div class="dialog-head"><h2 id="evidenceHeading">用例证据</h2><button class="secondary" type="button" data-close-dialog autofocus>关闭</button></div>
+      <div class="evidence-view">
+        <p id="evidenceFullText" hidden></p>
+        <img id="evidenceFullImage" alt="验收原图" hidden>
+        <p id="evidenceImageError" hidden>无法加载截图。</p>
+      </div>
+    </dialog>
   </main>
 </body>
 </html>

@@ -1,4 +1,4 @@
-"""K1 acceptance console. The HTTP service and execution nodes share no filesystem."""
+"""K1 acceptance console for local and remote execution nodes."""
 
 import argparse
 import base64
@@ -37,6 +37,7 @@ RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
 DEFAULT_COMPLETED_LIMIT = 100
+MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
 LAN_NETWORKS = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
 
 
@@ -76,6 +77,12 @@ class Console:
         self.database = database
         self.config = config
         self.workbook = workbook
+        self.local_evidence = None
+        try:
+            node = json.loads((Path(database).parent / "node.json").read_text(encoding="utf-8"))
+            self.local_evidence = (node["id"], (Path(node["state"]) / "runtime").resolve())
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         with self.db() as db:
             db.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -526,7 +533,35 @@ class Console:
             job["node_name"] = node["name"] if node else None
             if node and job["state"] == "running" and node["seen"] < time.time() - HEARTBEAT_TIMEOUT:
                 job["state"] = "disconnected"
-            return job
+        job["screenshots"] = list(self.screenshots(job))
+        return job
+
+    def screenshots(self, job):
+        attempt = job["attempt"] or ""
+        if (not self.local_evidence or job["node"] != self.local_evidence[0]
+                or not re.fullmatch(r"[a-f0-9]{32}", attempt)):
+            return {}
+        run = self.local_evidence[1] / attempt
+        if run.is_symlink():
+            return {}
+        try:
+            manifest = json.loads((run / "runtime.json").read_text(encoding="utf-8"))
+            if manifest.get("batch") != job["id"] or manifest.get("attempt") != attempt:
+                return {}
+        except (OSError, ValueError, AttributeError):
+            return {}
+        shots = {}
+        for index, item in enumerate(job["items"], 1):
+            for case in item.get("cases", []):
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", case["id"]):
+                    continue
+                path = run / f"item-{index}-{case['id']}.png"
+                try:
+                    if not path.is_symlink() and path.is_file() and 8 < path.stat().st_size <= MAX_SCREENSHOT_BYTES:
+                        shots[path.name] = path
+                except OSError:
+                    continue
+        return shots
 
     def agent(self, node_id, token):
         with self.db() as db:
@@ -774,6 +809,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.stream(job["id"])
             else:
                 self.json_response(200, job)
+        elif match := re.fullmatch(r"/api/jobs/(\d+)/screenshots/(item-\d+-[A-Za-z0-9_-]{1,40}\.png)", path):
+            job = self.app.detail(int(match[1]))
+            shot = self.app.screenshots(job).get(match[2])
+            try:
+                if shot is None:
+                    raise FileNotFoundError()
+                with shot.open("rb") as image:
+                    data = image.read(MAX_SCREENSHOT_BYTES + 1)
+            except OSError as error:
+                raise ApiError(404, "验收截图不存在。") from error
+            if len(data) > MAX_SCREENSHOT_BYTES or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ApiError(404, "验收截图无效。")
+            self.respond(200, data, "image/png")
         elif path in {"/", "/app.js", "/demo"} or path in APPEARANCE_ASSETS:
             file, kind = {
                 "/": ("web/index.html", "text/html"), "/app.js": ("web/app.js", "text/javascript"),

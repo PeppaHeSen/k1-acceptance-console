@@ -470,17 +470,68 @@ function renderPairings() {
   }));
 }
 
+function showEvidence(title, text, url) {
+  const dialog = byId("evidenceDialog");
+  const content = byId("evidenceFullText");
+  const image = byId("evidenceFullImage");
+  set("evidenceHeading",title);
+  content.textContent = text;
+  content.hidden = !text;
+  byId("evidenceImageError").hidden = true;
+  image.hidden = !url;
+  if (url) image.src = url;
+  else image.removeAttribute("src");
+  dialog.showModal();
+}
+
+function renderEvidence(cell, value, title, url) {
+  const text = (value || "").replace(/\s*[·；]\s*item-\d+-[A-Za-z0-9_-]+\.png\s*$/, "").trim();
+  if (!text && !url) return;
+  cell.className = "evidence-cell";
+  if (text) {
+    const summary = document.createElement("p");
+    summary.className = "evidence-summary";
+    summary.textContent = text.replace(/截图由\s*pass\s*保存[。.]?/gi, "").trim();
+    cell.append(summary);
+  }
+  const controls = document.createElement("div");
+  controls.className = "evidence-controls";
+  if (url) {
+    const thumbnail = document.createElement("button");
+    thumbnail.type = "button";
+    thumbnail.className = "evidence-thumbnail";
+    thumbnail.setAttribute("aria-label",`放大 ${title} 的截图`);
+    const image = document.createElement("img");
+    image.alt = "验收截图";
+    image.loading = "lazy";
+    image.src = url;
+    thumbnail.append(image);
+    thumbnail.addEventListener("click",()=>showEvidence(title,"",url));
+    controls.append(thumbnail);
+  }
+  if (text.length > 38) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "evidence-more";
+    more.textContent = "查看全文";
+    more.addEventListener("click",()=>showEvidence(title,text));
+    controls.append(more);
+  }
+  if (controls.childElementCount) cell.append(controls);
+}
+
 function renderChecklist(job) {
-  const snapshot = JSON.stringify(job.items);
+  const snapshot = JSON.stringify([job.items,job.screenshots]);
   if (snapshot === checklistSnapshot) return;
   checklistSnapshot = snapshot;
   const rows = document.createDocumentFragment();
   job.items.forEach((item,index)=>{
     const row = rows.appendChild(document.createElement("tr"));
     row.className = "checklist-item";
-    for (const value of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行",item.evidence?.reason || ""]) {
+    for (const value of [`${item.key} · ${item.title}`,resultNames[item.result] || "待执行"]) {
       row.insertCell().textContent = value;
     }
+    renderEvidence(row.insertCell(),item.evidence?.reason,item.key);
     if (!item.cases?.length) return;
 
     const toggle = document.createElement("button");
@@ -503,8 +554,10 @@ function renderChecklist(job) {
       description.textContent = test.title;
       title.append(id,description);
       caseRow.insertCell().append(title);
-      caseRow.insertCell().append(label(caseLabels[test.state]));
-      caseRow.insertCell().textContent = test.evidence || "";
+      caseRow.insertCell().append(label(caseLabels[test.state],test.state==="pass" ? "pass" : ""));
+      const screenshot = `item-${index+1}-${test.id}.png`;
+      const url = job.screenshots?.includes(screenshot) ? `/api/jobs/${job.id}/screenshots/${screenshot}` : "";
+      renderEvidence(caseRow.insertCell(),test.evidence,test.id,url);
       return caseRow;
     });
     toggle.setAttribute("aria-controls",cases.map(caseRow=>caseRow.id).join(" "));
@@ -631,6 +684,13 @@ for (const [button,dialog] of [["online","nodeDialog"],["newJob","jobDialog"],["
   byId(button).addEventListener("click",()=>byId(dialog).showModal());
 }
 document.querySelectorAll("[data-close-dialog]").forEach(element=>element.addEventListener("click",()=>element.closest("dialog").close()));
+document.querySelectorAll("[data-detail-jump]").forEach(button=>button.addEventListener("click",()=>{
+  byId(button.dataset.detailJump).scrollIntoView({block:"start"});
+}));
+byId("evidenceFullImage").addEventListener("error",()=>{
+  byId("evidenceFullImage").hidden = true;
+  byId("evidenceImageError").hidden = false;
+});
 themeChoices.find(input=>input.value===consoleAppearance.theme).checked = true;
 transparency.value = consoleAppearance.transparency;
 renderAppearance();
@@ -697,6 +757,7 @@ byId("summaryToggle").addEventListener("click",event=>{
   button.setAttribute("aria-pressed",String(limited));
   button.textContent = limited ? "显示全部详情" : "仅看进度";
   byId("checklist").hidden = byId("logsPanel").hidden = limited;
+  document.querySelector(".detail-jump").hidden = limited;
   if (!limited) followLatest();
 });
 byId("followLog").addEventListener("change",followLatest);

@@ -183,6 +183,24 @@
   .case-row { background: color-mix(in srgb, var(--control) 40%, transparent); }
   .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 3px 0 0 14px; }
   .case-id { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  .detail-jump { display: none; }
+  .evidence-summary {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden; color: var(--muted); font-weight: 400; line-height: 1.55;
+  }
+  .evidence-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 6px; }
+  .evidence-thumbnail {
+    display: grid; place-items: center; padding: 0; width: 78px; height: 46px;
+    overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--control);
+  }
+  .evidence-thumbnail:hover { border-color: var(--accent); }
+  .evidence-thumbnail img { width: 100%; height: 100%; object-fit: cover; }
+  .evidence-more { background: transparent; padding: 2px 0; border: 0; color: var(--accent); font-size: 12px; }
+  .evidence-more:hover { text-decoration: underline; }
+  #evidenceDialog { width: min(980px, calc(100vw - 28px)); }
+  .evidence-view { padding: 12px 16px; }
+  .evidence-view p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  .evidence-view img { display: block; max-width: 100%; max-height: calc(100dvh - 118px); margin: auto; object-fit: contain; }
   .log {
     --surface: var(--console); display: flex; flex: 1 0 244px; flex-direction: column;
     overflow: hidden; margin-top: 14px; color: var(--console-ink);
@@ -289,6 +307,26 @@
     .run { padding-block: 11px; }
     .list, .log { margin-top: 12px; }
   }
+  @media (max-width: 900px), (max-height: 820px) {
+    .view-detail { height: auto; }
+    #detail { flex: none; }
+    .detail-jump { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .detail-jump .secondary { min-height: 32px; font-size: 12px; }
+    #checklist, #logsPanel { scroll-margin-top: 92px; }
+    #checklist { max-height: none; min-height: 0; }
+    #checklist .table-wrap { overflow: visible; }
+    .checklist-table, .checklist-table tbody { display: block; }
+    .checklist-table thead, .checklist-table colgroup { display: none; }
+    .checklist-table tr {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px;
+      padding: 10px 14px; border-top: 1px solid var(--line);
+    }
+    .checklist-table td { min-width: 0; padding: 0; border: 0; }
+    .checklist-table td:nth-child(3) { grid-column: 1 / -1; }
+    .checklist-table td:nth-child(3):empty { display: none; }
+    .case-title { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 0; }
+    #logsPanel:not(.collapsed) { flex: none; height: clamp(230px, 46dvh, 440px); }
+  }
   @media (max-width: 700px) {
     .top, main { width: calc(100% - 28px); }
     .top { min-height: 58px; padding-block: 6px; gap: 6px; }
@@ -303,12 +341,8 @@
     .job-controls { grid-row: 3; grid-column: 2; }
     .job-controls:not(:has(button)) { display: none; }
     .wizard-layout { grid-template-columns: minmax(0,1fr); }
-    .list { max-height: clamp(164px, 35dvh, 280px); }
     .log-header { flex-wrap: wrap; }
     .entry { grid-template-columns: 62px 26px minmax(0,1fr); gap: 6px; font-size: 12px; }
     th, td { padding-inline: 9px; }
-    .checklist-result { width: 76px; }
-    .checklist-evidence { width: 23%; }
-    .case-title { grid-template-columns: minmax(0, 1fr); gap: 1px; padding-left: 3px; }
     #settingsDialog { margin: 69px 14px auto auto; }
   }
