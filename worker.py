@@ -28,7 +28,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.13.2"
+WORKER_VERSION = "0.13.3"
 CASE_PLAN_SCHEMA = {
     "type": "object", "required": ["summary", "items"], "additionalProperties": False,
     "properties": {
@@ -68,11 +68,16 @@ return "ready";
 '''
 
 LOGIN = r'''
+if (!UnityEditor.EditorApplication.isPlaying) return "loading";
 var player = Logic.LPlayer.I;
-if (player.PlayerID == __PLAYER__ && player.ServerId == __SERVER__) return "logged_in";
-if (player.PlayerID != 0) return "wrong_role";
 var scenes = UnityEngine.Object.FindObjectsOfType<UnityEngine.Canvas>(false);
 if (scenes.Any(c => c.name.StartsWith("UILoginTipsDialog"))) return "login_error";
+if (player.PlayerID == __PLAYER__ && player.ServerId == __SERVER__)
+{
+    if (Game.Data.GameData.I?.BindData?.switchLangeuageing == true) return "loading";
+    return scenes.Any(c => c.name.StartsWith("UIMain")) ? "logged_in" : "loading";
+}
+if (player.PlayerID != 0) return "wrong_role";
 var root = scenes.FirstOrDefault(c => c.name.StartsWith("UILogin"));
 if (root == null) return "loading";
 var dialog = scenes.FirstOrDefault(c => c.name.StartsWith("UISwitchRole"));
@@ -323,6 +328,7 @@ class UnityTools:
         self.observed = False
         self.active = None
         self.artifact = None
+        self.login_restarted = False
 
     def game_view_label(self):
         return json.dumps(f"K1 Acceptance {self.run.name[-20:]}")
@@ -373,6 +379,29 @@ class UnityTools:
             raise RuntimeError("Unity 未恢复原来的 Game 窗口尺寸。")
         original.unlink()
 
+    def resume_test_login(self):
+        self.visible.clear()
+        self.observed = False
+        login = LOGIN.replace("__PLAYER__", str(self.manifest["test_player"])).replace(
+            "__SERVER__", str(int(self.manifest["server"])))
+        for _ in range(8):
+            status = self.bridge.code(login)
+            if status not in {"loading", "selected", "confirmed"}:
+                break
+            time.sleep(2)
+        if status == "logged_in":
+            self.login_restarted = False
+        elif status == "login_error" and not self.login_restarted:
+            self.login_restarted = True
+            self.bridge.play(False)
+            for _ in range(8):
+                if self.bridge.code("return !UnityEditor.EditorApplication.isPlaying;") is True:
+                    self.bridge.play(True)
+                    return "restarting_play"
+                time.sleep(.5)
+            raise RuntimeError("Unity 未退出 Play，无法重试登录。")
+        return status
+
     def handle(self, name, args):
         if name == "observe":
             canvas = str(args.get("canvas", ""))[:100]
@@ -398,16 +427,7 @@ class UnityTools:
         if name == "set_game_view":
             return self.set_game_view(args["width"], args["height"])
         if name == "resume_test_login":
-            self.visible.clear()
-            self.observed = False
-            login = LOGIN.replace("__PLAYER__", str(self.manifest["test_player"])).replace(
-                "__SERVER__", str(int(self.manifest["server"])))
-            for _ in range(8):
-                status = self.bridge.code(login)
-                if status not in {"loading", "selected", "confirmed"}:
-                    return status
-                time.sleep(2)
-            return status
+            return self.resume_test_login()
         if name == "capture_view":
             return self.capture_view()
         if name == "sample_hero_animation":
@@ -1271,6 +1291,8 @@ class Node:
             "需要重拍时用 capture_view。仅调 Game 窗口，Worker 会恢复原尺寸；逐档记录 Unity 预览结果。"
             "语言属于游戏内玩家设置。通过头像、设置、语言菜单选择并确认，先用 observe 记下原语言。"
             "重启后用 resume_test_login 接回同一个角色，再用 observe 和 capture_view 确认当前语言、实际界面和 RTL。"
+            "resume_test_login 返回 loading、selected、confirmed 或 restarting_play 时继续调用，直到主城加载并核对同一角色。"
+            "认证错误会自动重新进入 Play 一次，再失败就记录错误。"
             "用例完成前用同一路径恢复原语言并确认登录和语言。"
             "英雄或战力不够时，先查看玩法入口、战力引导、现有英雄、背包资源和免费奖励。"
             "允许给本批次指定的测试角色领取免费奖励、通过正常玩法获取英雄、用已有普通资源升级英雄。"

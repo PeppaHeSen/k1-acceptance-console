@@ -9,6 +9,18 @@ from worker import Node, UnityTools, acceptance_checkout, command, save_json
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_language_restart_retries_play_once_after_login_error(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": temp, "test_player": 1})
+            tools = UnityTools(manifest)
+            tools.bridge = Mock()
+            tools.bridge.code.side_effect = ["login_error", True, "login_error", "logged_in"]
+            self.assertEqual(tools.resume_test_login(), "restarting_play")
+            self.assertEqual(tools.resume_test_login(), "login_error")
+            self.assertEqual(tools.resume_test_login(), "logged_in")
+            self.assertEqual([c.args for c in tools.bridge.play.call_args_list], [(False,), (True,)])
+
     def test_game_view_resize_checks_screenshot_pixels_instead_of_screen_dimensions(self):
         with TemporaryDirectory() as temp:
             run = Path(temp)
