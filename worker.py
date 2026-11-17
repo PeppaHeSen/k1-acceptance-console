@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.6"
+WORKER_VERSION = "0.14.7"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -1917,6 +1917,8 @@ class Node:
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] in {"--unity-tools", "--function-review-tools"}:
+        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")
         serve_unity_tools(Path(sys.argv[2]), planning=sys.argv[1] == "--function-review-tools")
         sys.exit(0)
     parser = argparse.ArgumentParser()
