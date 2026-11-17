@@ -47,9 +47,9 @@ Worker 接单后冻结一个 K1FunctionReview 提交，本轮只发起一次验�
 
 网页选择的功能验收、版本日验收分别对应 FunctionReview 的 `development`、`mainline_regression`。自动验收在 Unity 中执行。Agent 在遇到缺少前置的用例时按技能查找现有条件，按需重登、切换测试身份，或使用节点上已配置的环境准备动作。准备过程、回执和用例结果进入批次执行记录，截图保存在执行节点的运行目录。
 
-在节点 `node.json` 中用 `"unity_test_servers": ["2903"]` 配置可验收的测试服，也兼容旧版 `unity_test_roles` 中的服号。验收 Agent 读取本机 Unity 当前账号下目标服可用角色，按用例选择并验证实际身份。普通列表为空时，Agent 可以通过 Unity 的 Dev 快速登录面板使用已登记在 `unity_test_roles` 的目标服测试角色。切换到目标服以外做专门的环境准备时，也使用该配置中对应服的角色。Unity 工程需启用本机 Editor Debug MCP，默认检查 21891–21893。若端口不同，可用 `unity_debug_ports` 指定本机端口列表。
+在节点 `node.json` 中用 `"unity_test_servers": ["2903"]` 配置可验收的测试服，也兼容从旧版 `unity_test_roles` 读取服号。验收 Agent 读取本机 Unity 当前账号下的选服信息和可用角色。符合要求的角色可沿用或切换，目标服已加载、在线且无可用角色时可走游戏自带的创角流程。确认实际服号和角色后再执行用例。Unity 工程需启用本机 Editor Debug MCP，默认检查 21891–21893。若端口不同，可用 `unity_debug_ports` 指定本机端口列表。
 
-节点管理员可在 `node.json` 的 `unity_environment_actions` 中登记已有的环境准备脚本。每个动作填写 `kind`（`gm`、`simulation` 或 `jenkins`）、`server`、`player`、`description`、`command`（固定参数数组，首项为本机可执行文件的绝对路径）和可选 `timeout`（单次调用 1 到 180 秒，默认 90）。服和角色需出现在 `unity_test_roles`。GM 与故障模拟还需要 Unity 已登录该服和角色。可在 `parameters` 定义可选值和整数范围，例如 `{"stage":["prepare","active"],"count":{"min":1,"max":3}}`。Agent 执行时按用例选择具体参数。
+节点管理员可在 `node.json` 的 `unity_environment_actions` 中登记已有的环境准备脚本。每个动作填写 `kind`（`gm`、`simulation` 或 `jenkins`）、`server`、`player`、`description`、`command`（固定参数数组，首项为本机可执行文件的绝对路径）和可选 `timeout`（单次调用 1 到 180 秒，默认 90）。动作指定的服和角色只用于该环境动作，GM 与故障模拟还需要 Unity 已登录该身份。可在 `parameters` 定义可选值和整数范围，例如 `{"stage":["prepare","active"],"count":{"min":1,"max":3}}`。Agent 执行时按用例选择具体参数。
 
 动作脚本从标准输入读取一条 JSON，包含 `batch`、`attempt`、`item`、`case`、`action`、`server`、`player`、`client`、`refs`、`function_review`、`parameters` 和 `operation`。脚本可复用该提交里的 FunctionReview GM 或 Jenkins 流程。同一次执行中，同动作、同参数会得到同一个 `operation`，脚本按它保存回执，重复调用时查询或复用已提交的动作。标准输出只返回 `{"status":"ready|pending|blocked","evidence":"可展示的回执摘要"}`。长时间的部署可先返回 `pending`，Agent 可以暂放该用例，跑其他独立用例后再查询。回执摘要会显示在网页，凭据、原始部署参数和敏感日志留在节点本地。Agent 收到 `ready` 后还要验证用例需要的业务前置。
 

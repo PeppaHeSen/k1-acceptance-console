@@ -158,9 +158,10 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             save_json(cases, {"NK-1": [{"id": "TC-1", "state": "pending"}, {"id": "TC-2", "state": "pending"}]})
             tools = UnityTools(manifest)
             tools.bridge = Mock()
-            tools.bridge.code.side_effect = ["logged_in", True]
+            tools.bridge.code.side_effect = [{"in_game": False, "current_server": 0, "current_player": 0,
+                                             "roles_ready": True, "players": [2]}, "logged_in", True]
             options = tools.handle("environment_options", {})
-            self.assertEqual(options["roles"]["2904"], [2])
+            self.assertEqual(options["actions"]["scenario"]["player"], 2)
             self.assertNotIn("command", options["actions"]["scenario"])
             first = {"item": "NK-1", "case": "TC-1"}
             second = {"item": "NK-1", "case": "TC-2"}
@@ -168,7 +169,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             tools.record({**first, "state": "running"})
             with self.assertRaisesRegex(ValueError, "测试服和角色"):
                 tools.handle("prepare_environment", action)
-            with self.assertRaisesRegex(ValueError, "不在节点配置"):
+            with self.assertRaisesRegex(ValueError, "已授权环境动作"):
                 tools.handle("select_test_role", {"server": 2904, "player": 3})
             self.assertEqual(tools.handle("select_test_role", {"server": 2904, "player": 2})["status"], "logged_in")
             self.assertIn("ServerId != 2904", tools.guard)
@@ -219,22 +220,29 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertIn("PlayerID != 2", tools.guard)
             tools.bridge.play.assert_not_called()
 
-    def test_agent_can_use_existing_dev_login_when_the_regular_role_list_is_empty(self):
+    def test_agent_creates_a_role_through_the_target_server_confirmation(self):
         with TemporaryDirectory() as temp:
             manifest = Path(temp) / "runtime.json"
             save_json(manifest, {"server": "2903", "project": temp, "test_roles": {"2903": [2]}})
             tools = UnityTools(manifest)
             tools.bridge = Mock()
             roles = {"in_game": False, "current_server": 0, "current_player": 0, "login_error": False,
-                     "roles_ready": False, "players": [], "fast_login_panel": True, "screens": ["UILogin"]}
-            tools.bridge.code.side_effect = [roles, "selected", "confirmed", "logged_in"]
+                     "roles_ready": True, "players": [], "server_listed": True, "server_online": True}
+            identity = {"status": "logged_in", "server": 2903, "player": 3}
+            tools.bridge.code.side_effect = [roles, {"status": "account_loading"},
+                                            {"status": "confirmation_pending"}, {"status": "submitted"},
+                                            {"status": "loading"}, identity]
             options = tools.handle("available_test_roles", {})
-            self.assertEqual((options["players"], options["fast_login_players"]), ([], [2]))
-            with self.assertRaisesRegex(ValueError, "已登记"):
-                tools.handle("select_test_role", {"player": 3, "fast_login": True})
-            with patch("worker.time.sleep"):
-                result = tools.handle("select_test_role", {"player": 2, "fast_login": True})
-            self.assertEqual(result, {"status": "logged_in", "server": 2903, "player": 2})
+            self.assertEqual(options["players"], [])
+            self.assertNotIn("fast_login_players", options)
+            for status in ("account_loading", "confirmation_pending", "submitted", "loading"):
+                self.assertEqual(tools.handle("create_test_role", {}), {"status": status})
+                self.assertIsNone(tools.player)
+            self.assertEqual(tools.handle("create_test_role", {}), identity)
+            self.assertIn("PlayerID != 3", tools.guard)
+            scripts = [call.args[0] for call in tools.bridge.code.call_args_list]
+            self.assertIn("if (true) {", scripts[3])
+            self.assertIn('if (true) return new {status = "loading"}', scripts[4])
             report = (manifest.parent / "environment.json").read_text(encoding="utf-8")
             self.assertIn("身份已验证", report)
 
