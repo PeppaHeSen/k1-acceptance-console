@@ -2,6 +2,7 @@ from contextlib import nullcontext
 import json
 from pathlib import Path
 from subprocess import Popen
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
@@ -65,6 +66,51 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertEqual(tools.resume_test_login(), "login_error")
             self.assertEqual(tools.resume_test_login(), "logged_in")
             self.assertEqual([c.args for c in tools.bridge.play.call_args_list], [(False,), (True,)])
+
+    def test_case_can_prepare_environment_and_resume_after_other_cases(self):
+        with TemporaryDirectory() as temp:
+            run = Path(temp)
+            manifest = run / "runtime.json"
+            save_json(manifest, {"batch": 28, "attempt": "test", "server": "2903", "project": temp,
+                                 "client": "a" * 40, "function_review": {"revision": "b" * 40},
+                                 "reference_branches": {"game": "dev"}, "test_player": 1,
+                                 "test_roles": {"2903": [1], "2904": [2]},
+                                 "environment_actions": {"scenario": {
+                                     "kind": "gm", "server": 2904, "player": 2, "description": "准备场景", "timeout": 10,
+                                     "parameters": {"stage": ["active"]},
+                                     "command": [sys.executable, "-c",
+                                                 "import json,sys; request=json.load(sys.stdin);"
+                                                 "assert request['server']==2904 and request['case']=='TC-1';"
+                                                 "assert request['parameters']=={'stage':'active'} and request['operation'];"
+                                                 "print(json.dumps({'status':'ready','evidence':'readback 123'}))"],
+                                 }}})
+            cases = run / "cases.json"
+            save_json(cases, {"NK-1": [{"id": "TC-1", "state": "pending"}, {"id": "TC-2", "state": "pending"}]})
+            tools = UnityTools(manifest)
+            tools.bridge = Mock()
+            tools.bridge.code.side_effect = ["ready", "logged_in", True]
+            options = tools.handle("environment_options", {})
+            self.assertEqual(options["roles"]["2904"], [2])
+            self.assertNotIn("command", options["actions"]["scenario"])
+            first = {"item": "NK-1", "case": "TC-1"}
+            second = {"item": "NK-1", "case": "TC-2"}
+            action = {"action": "scenario", "reason": "缺前置", "parameters": {"stage": "active"}}
+            tools.record({**first, "state": "running"})
+            with self.assertRaisesRegex(ValueError, "测试服和角色"):
+                tools.handle("prepare_environment", action)
+            with self.assertRaisesRegex(ValueError, "不在节点配置"):
+                tools.handle("select_test_role", {"server": 2904, "player": 3})
+            self.assertEqual(tools.handle("select_test_role", {"server": 2904, "player": 2})["status"], "logged_in")
+            self.assertIn("ServerId != 2904", tools.guard)
+            with self.assertRaisesRegex(ValueError, "超出配置范围"):
+                tools.handle("prepare_environment", {**action, "parameters": {"stage": "closed"}})
+            self.assertEqual(tools.handle("prepare_environment", action)["evidence"], "readback 123")
+            self.assertFalse(tools.observed)
+            tools.record({**first, "state": "defer", "observation": "等待状态同步"})
+            tools.record({**second, "state": "running"})
+            tools.record({**second, "state": "confirm", "observation": "需要确认"})
+            tools.record({**first, "state": "running"})
+            self.assertIn("readback 123", (run / "environment.json").read_text(encoding="utf-8"))
 
     def test_game_view_resize_checks_screenshot_pixels_instead_of_screen_dimensions(self):
         with TemporaryDirectory() as temp:
