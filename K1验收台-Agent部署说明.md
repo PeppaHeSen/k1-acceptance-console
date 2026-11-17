@@ -49,6 +49,8 @@ Worker 接单后从同一个 K1FunctionReview 提交读取 `review-k1-function`�
 
 Worker 会等待工程导入、进入 Play、登录并核对实际角色，再通过 Unity 工具让 Agent 执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 关闭 Unity、还原工程并回传结果。如果节点未配置 `unity_test_roles`，Unity 路径仍使用人工接手。版本日可填写一个 Jira 单号，仅排队该项。
 
+屏幕适配用例在 Unity Game 窗口逐个应用目标分辨率并核对实际画面，Worker 在退出前恢复原尺寸。语言用例通过游戏内设置切换，客户端重启后接续同一测试角色，结束时恢复原语言。需要英雄或战力时，Agent 可以在指定的测试角色上通过正常玩法获得英雄、领取免费奖励和使用已有普通资源升级。英雄获得和升级可能保留在测试角色上。代码、数据表和服务端配置禁止修改。
+
 用例按 `runtime.json` 的 `cases_file` 路径原子写入。单事项可写用例数组。多事项用对象保存，键取 `runtime.json` 中每个事项的 `key`，值为各自的用例数组。每个用例填写稳定的 `id`、`title`、`state` 和可选的 `evidence`，状态支持 `pending`、`running`、`pass`、`fail`、`blocked`、`confirm`。每完成一条用例就更新该文件，Worker 会把进度同步到网页。
 
 实测结束后，在 `runtime.json` 同一目录原子写入 `result.json`，然后关闭本批次的 Unity Editor。回执须包含以下字段，实际回执填写完整提交和证据位置。
