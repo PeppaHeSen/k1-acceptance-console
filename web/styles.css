@@ -105,11 +105,13 @@
   .mono, .entry time { font-family: "IBM Plex Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
 
   .job-card { overflow: hidden; }
+  .queue-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 14px; padding-right: 12px; }
+  #queueSearch { width: min(290px, 100%); min-height: 32px; margin-block: 6px; }
   #queueFilters { display: flex; padding: 8px 12px; gap: 4px; }
   #queueFilters button { background: transparent; color: var(--muted); border: 0; border-radius: 999px; padding: 5px 10px; }
   #queueFilters button[aria-pressed="true"] { background: var(--soft-blue); color: var(--accent); font-weight: 700; }
   .job-columns, .job {
-    display: grid; grid-template-columns: minmax(145px, 1.4fr) minmax(130px, 1fr) minmax(121px, .6fr) 105px;
+    display: grid; grid-template-columns: minmax(145px, 1.4fr) minmax(130px, 1fr) minmax(121px, auto) minmax(103px, .56fr) minmax(82px, .42fr) 96px;
     align-items: center; gap: 12px; padding-inline: 17px;
   }
   .job-columns { background: var(--control); border-block: 1px solid var(--line); padding-block: 6px; color: var(--muted); font-size: 12px; }
@@ -128,6 +130,8 @@
   .job small { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .job-phase > div:first-child { display: flex; justify-content: space-between; gap: 7px; font-size: 12px; color: var(--muted); }
   .job .pill { width: max-content; }
+  .job-verdict { display: flex; flex-wrap: wrap; gap: 4px; }
+  .job-operator { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .job-open { color: var(--accent); font-size: 12px; white-space: nowrap; }
   .job-list:not(:has(.job)) { padding: 12px 17px; color: var(--muted); }
   .queue-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 16px 17px; color: var(--muted); }
@@ -165,17 +169,17 @@
   .run #progressCount { margin: 0; }
   .list {
     display: flex; flex-direction: column; min-height: 180px;
-    margin-top: 12px; overflow: hidden;
+    margin-top: 12px; overflow: clip;
   }
   .list-head { flex: none; padding: 9px 18px; }
-  .table-wrap { min-height: 0; overflow: auto; scroll-padding-top: 36px; }
+  .table-wrap { min-height: 0; }
   .table-wrap:focus-visible { outline-offset: -3px; }
   .checklist-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 13px; }
   .checklist-result { width: 100px; }
   .checklist-evidence { width: 30%; }
   th, td { padding: 8px 14px 8px 18px; border-top: 1px solid var(--line); vertical-align: top; }
   th { background: var(--control); color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }
-  .checklist-table th { position: sticky; top: 0; z-index: 1; background: color-mix(in srgb, var(--card) 94%, var(--accent)); }
+  .checklist-table th { position: sticky; top: 65px; z-index: 1; background: color-mix(in srgb, var(--card) 94%, var(--accent)); }
   .checklist-table :is(th, td) { padding-block: 6px; }
   .checklist-table td { vertical-align: middle; }
   td:nth-child(2) { white-space: nowrap; }
@@ -190,8 +194,8 @@
     border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
   .case-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
   .case-row { background: color-mix(in srgb, var(--control) 40%, transparent); }
-  .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding-left: 10px; }
-  .case-id { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  .case-title { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px; }
+  .case-id { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .detail-jump { display: none; }
   .evidence-summary {
     min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
@@ -204,6 +208,11 @@
   }
   .evidence-thumbnail:hover { border-color: var(--accent); }
   .evidence-thumbnail img { width: 100%; height: 100%; object-fit: cover; }
+  .evidence-thumbnail[data-count] { position: relative; }
+  .evidence-thumbnail[data-count]::after {
+    content: attr(data-count); position: absolute; right: 0; bottom: 0;
+    background: #121c30; color: white; border-radius: 4px 0 0 0; padding: 0 4px; font-size: 10px;
+  }
   .evidence-more {
     display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px;
     min-width: 0; min-height: 28px; padding: 0; border: 0; background: transparent; text-align: left; font-size: 12px;
@@ -213,12 +222,20 @@
   #evidenceDialog { width: min(980px, calc(100vw - 28px)); }
   .evidence-view { padding: 12px 16px; }
   .evidence-view p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
-  .evidence-view img { display: block; max-width: 100%; max-height: calc(100dvh - 118px); margin: auto; object-fit: contain; }
+  #evidenceFullText:not([hidden]) + #evidenceGallery { margin-top: 16px; }
+  .evidence-frame { display: flex; justify-content: center; align-items: center; gap: 8px; }
+  .evidence-frame > div { min-width: 0; }
+  .evidence-frame button { flex-shrink: 0; padding-inline: 10px; font-size: 20px; }
+  #evidenceFullImage { display: block; max-width: 100%; max-height: 57dvh; margin: auto; object-fit: contain; }
+  #evidencePosition { margin-top: 8px; text-align: center; color: var(--muted); font-size: 12px; }
+  #evidenceThumbnails { display: flex; justify-content: safe center; gap: 8px; overflow-x: auto; padding: 6px 4px; }
+  #evidenceThumbnails .evidence-thumbnail { width: 65px; height: 44px; }
+  #evidenceThumbnails [aria-current="true"] { border: 2px solid var(--accent); }
   .log {
     --surface: var(--console); display: flex; flex: none; flex-direction: column;
     overflow: hidden; margin-top: 12px; color: var(--console-ink);
   }
-  .log:not(.collapsed) { height: clamp(180px, 27dvh, 340px); }
+  .log:not(.collapsed) { height: clamp(320px, 64dvh, 800px); }
   .log-header { flex: none; padding: 8px 16px; min-height: 42px; background: var(--console-head); }
   #logToggle { display: inline-flex; align-items: center; gap: 8px; padding: 2px; background: none; border: 0; color: inherit; font-weight: 700; }
   #logToggle span { display: inline-block; font-size: 20px; line-height: .8; }
@@ -313,11 +330,6 @@
     .detail-heading { display: flex; align-items: center; gap: 16px; }
     #detail .detail-heading .back { align-self: auto; margin-bottom: 0; }
   }
-  @media (min-width: 901px) and (min-height: 821px) {
-    .view-detail { height: 100dvh; }
-    .view-detail main, #detail { min-height: 0; }
-    .table-wrap, #logEntries { overscroll-behavior-y: contain; }
-  }
   @media (min-width: 701px) and (max-height: 899px) {
     .view-detail main { padding-block: 16px; }
     #detail .back { min-height: 38px; margin-bottom: 10px; }
@@ -325,8 +337,7 @@
     .run { padding-block: 11px; }
     .list, .log { margin-top: 12px; }
   }
-  @media (max-width: 900px), (max-height: 820px) {
-    .view-detail { height: auto; }
+  @media (max-width: 900px) {
     #detail { flex: none; }
     .detail-jump { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .detail-jump .secondary { min-height: 32px; font-size: 12px; }
@@ -343,7 +354,14 @@
     .checklist-table td:nth-child(3) { grid-column: 1 / -1; }
     .checklist-table td:nth-child(3):empty { display: none; }
     .case-title { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 0; }
-    #logsPanel:not(.collapsed) { flex: none; height: clamp(230px, 46dvh, 440px); }
+    .job-columns { display: none; }
+    .job { grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; }
+    .job-status { justify-self: end; }
+    .job-phase { grid-column: 1/-1; grid-row: 2; }
+    .job-verdict { grid-column: 1; grid-row: 3; }
+    .job-operator { grid-column: 1; grid-row: 4; }
+    .job-operator::before { content: "操作人 "; }
+    .job-controls { grid-row: 3 / 5; grid-column: 2; }
   }
   @media (max-width: 700px) {
     .top, main { width: calc(100% - 28px); }
@@ -352,11 +370,10 @@
     .header-actions .secondary { font-size: 11px; min-height: 27px; padding-inline: 6px; }
     main { padding-top: 16px; }
     #detail .page-intro { flex-direction: column; align-items: flex-start; }
-    .job-columns { display: none; }
-    .job { grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; padding-inline: 12px; }
-    .job-phase { grid-column: 1/-1; grid-row: 2; }
+    .job { padding-inline: 12px; }
+    .queue-toolbar { padding-right: 0; }
+    #queueSearch { width: calc(100% - 24px); margin: 0 12px 9px; }
     .job-open { display: none; }
-    .job-controls { grid-row: 3; grid-column: 2; }
     .job-controls:not(:has(button)) { display: none; }
     .wizard-layout { grid-template-columns: minmax(0,1fr); }
     .log-header { flex-wrap: wrap; }

@@ -28,7 +28,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.14.1"
+WORKER_VERSION = "0.14.2"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -193,8 +193,8 @@ TOOLS = {
               {"id": {"type": "integer"}}, ["id"]),
     "set_game_view": ("设置 Unity Game 窗口的固定渲染尺寸并返回实际画面，支持横屏和竖屏。Worker 在验收结束后恢复原尺寸。",
                       {"width": {"type": "integer"}, "height": {"type": "integer"}}, ["width", "height"]),
-    "capture_view": ("查看当前 Unity Game 的实际画面、截图像素尺寸和游戏语言。可用于检查遮挡、裁切、换行和 RTL。",
-                     {}, []),
+    "capture_view": ("查看当前 Unity Game 的实际画面、截图像素尺寸和游戏语言。save=true 时将当前截图加入该用例证据，可多次保存。",
+                     {"save": {"type": "boolean"}}, []),
     "resume_test_login": ("仅在当前用例通过游戏设置切换语言并重启后调用。沿用本批次的测试服和角色，返回 logged_in 才可继续验收。",
                           {}, []),
     "sample_hero_animation": ("用 Unity 导入的塔防英雄 Prefab 和 Spine 动画数据采样实际骨骼姿态。仅用于资源预览用例。",
@@ -470,7 +470,13 @@ class UnityTools:
         if name == "resume_test_login":
             return self.resume_test_login()
         if name == "capture_view":
-            return self.capture_view()
+            info, png = self.capture_view()
+            if args.get("save") is True:
+                screenshot = self.next_case_screenshot(*self.active)
+                with screenshot.open("xb") as image:
+                    image.write(png)
+                info["evidence"] = screenshot.name
+            return info, png
         if name == "sample_hero_animation":
             hero = args["hero"]
             if not self.active or type(hero) is not int or not 1 <= hero <= 99999:
@@ -509,7 +515,7 @@ class UnityTools:
             if state in {"pass", "fail"}:
                 if not self.observed:
                     raise ValueError("请先 observe 验证操作后的实际界面。")
-                evidence = self.artifact or self.capture_case(list(cases).index(item) + 1, case_id)
+                evidence = self.artifact or self.capture_case(item, case_id)
                 observation = observation[:450] + " · " + evidence.name
             case["evidence"] = observation[:600]
             self.active = None
@@ -517,8 +523,18 @@ class UnityTools:
         save_json(file, cases)
         return {"case": case_id, "state": state}
 
-    def capture_case(self, index, case_id):
-        screenshot = self.run / f"item-{index}-{case_id}.png"
+    def next_case_screenshot(self, item, case_id):
+        index = next(index for index, entry in enumerate(self.manifest["items"], 1) if entry["key"] == item)
+        stem = self.run / f"item-{index}-{case_id}"
+        screenshot = stem.with_suffix(".png")
+        number = 1
+        while screenshot.exists():
+            number += 1
+            screenshot = stem.with_suffix(f".{number}.png")
+        return screenshot
+
+    def capture_case(self, item, case_id):
+        screenshot = self.next_case_screenshot(item, case_id)
         capture = f"UnityEngine.ScreenCapture.CaptureScreenshot({json.dumps(str(screenshot))}); return true;"
         if self.bridge.code(self.guard + capture) is not True:
             raise RuntimeError("验收角色已变化，无法保存截图。")
@@ -1380,7 +1396,8 @@ class Node:
             "先 observe 看当前场景、Canvas、控件路径与可见文字。路径筛选可以找更深的控件。"
             "sample_hero_animation 可用于明确要求的塔防英雄 Prefab 资源预览。"
             "屏幕适配用 set_game_view 逐个应用用例要求的分辨率，根据工具返回的实际截图核对裁切、遮挡和重叠。"
-            "需要重拍时用 capture_view。仅调 Game 窗口，Worker 会恢复原尺寸；逐档记录 Unity 预览结果。"
+            "用 capture_view 的 save=true 保存支持结论的关键画面；有多个状态或角度时逐张保存到同一用例。"
+            "仅调 Game 窗口，Worker 会恢复原尺寸；逐档记录 Unity 预览结果。"
             "语言属于游戏内玩家设置。通过头像、设置、语言菜单选择并确认，先用 observe 记下原语言。"
             "重启后用 resume_test_login 接回同一个角色，再用 observe 和 capture_view 确认当前语言、实际界面和 RTL。"
             "resume_test_login 返回 loading、selected、confirmed 或 restarting_play 时继续调用，直到主城加载并核对同一角色。"

@@ -38,6 +38,7 @@ HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
 DEFAULT_COMPLETED_LIMIT = 100
 MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
+SCREENSHOT_NAME = r"item-\d+-[A-Za-z0-9_-]{1,40}(?:\.[1-9]\d{0,3})?\.png"
 LAN_NETWORKS = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
 
 
@@ -550,18 +551,21 @@ class Console:
                 return {}
         except (OSError, ValueError, AttributeError):
             return {}
-        shots = {}
-        for index, item in enumerate(job["items"], 1):
-            for case in item.get("cases", []):
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", case["id"]):
-                    continue
-                path = run / f"item-{index}-{case['id']}.png"
-                try:
-                    if not path.is_symlink() and path.is_file() and 8 < path.stat().st_size <= MAX_SCREENSHOT_BYTES:
-                        shots[path.name] = path
-                except OSError:
-                    continue
-        return shots
+        cases = {f"item-{index}-{case['id']}" for index, item in enumerate(job["items"], 1)
+                 for case in item.get("cases", [])}
+        shots = []
+        for path in run.glob("item-*.png"):
+            if not re.fullmatch(SCREENSHOT_NAME, path.name):
+                continue
+            stem, _, suffix = path.stem.partition(".")
+            if stem not in cases:
+                continue
+            try:
+                if not path.is_symlink() and path.is_file() and 8 < path.stat().st_size <= MAX_SCREENSHOT_BYTES:
+                    shots.append((stem, int(suffix or 1), path))
+            except OSError:
+                continue
+        return {path.name: path for _, _, path in sorted(shots)}
 
     def agent(self, node_id, token):
         with self.db() as db:
@@ -809,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.stream(job["id"])
             else:
                 self.json_response(200, job)
-        elif match := re.fullmatch(r"/api/jobs/(\d+)/screenshots/(item-\d+-[A-Za-z0-9_-]{1,40}\.png)", path):
+        elif match := re.fullmatch(rf"/api/jobs/(\d+)/screenshots/({SCREENSHOT_NAME})", path):
             job = self.app.detail(int(match[1]))
             shot = self.app.screenshots(job).get(match[2])
             try:

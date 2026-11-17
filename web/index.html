@@ -79,13 +79,16 @@
         </form>
       </dialog>
       <section class="card job-card">
-        <nav id="queueFilters" aria-label="筛选运行队列">
-          <button type="button" data-filter="all" aria-pressed="true">全部</button>
-          <button type="button" data-filter="running" aria-pressed="false">验收中</button>
-          <button type="button" data-filter="queued" aria-pressed="false">排队中</button>
-          <button type="button" data-filter="done" aria-pressed="false">已结束</button>
-        </nav>
-        <div class="job-columns" aria-hidden="true"><span>任务</span><span>运行进度</span><span>状态</span></div>
+        <div class="queue-toolbar">
+          <nav id="queueFilters" aria-label="筛选运行队列">
+            <button type="button" data-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-filter="running" aria-pressed="false">验收中</button>
+            <button type="button" data-filter="queued" aria-pressed="false">排队中</button>
+            <button type="button" data-filter="done" aria-pressed="false">已结束</button>
+          </nav>
+          <input id="queueSearch" type="search" aria-label="搜索运行队列" placeholder="搜索批次、工单、分支或操作人">
+        </div>
+        <div class="job-columns" aria-hidden="true"><span>任务</span><span>运行进度</span><span>运行状态</span><span>验收结果</span><span>操作人</span></div>
         <div id="queueStatus" class="queue-status" role="status">
           <span id="queueStatusText">正在加载验收记录…</span>
           <button id="retryQueue" type="button" class="secondary" hidden>重新加载</button>
@@ -222,8 +225,18 @@
       <div class="dialog-head"><h2 id="evidenceHeading">用例证据</h2><button class="secondary" type="button" data-close-dialog autofocus>关闭</button></div>
       <div class="evidence-view">
         <p id="evidenceFullText" hidden></p>
-        <img id="evidenceFullImage" alt="验收原图" hidden>
-        <p id="evidenceImageError" hidden>无法加载截图。</p>
+        <div id="evidenceGallery" hidden>
+          <div class="evidence-frame">
+            <button id="evidencePrevious" class="secondary" type="button" aria-label="上一张截图">‹</button>
+            <div>
+              <img id="evidenceFullImage" alt="验收原图">
+              <p id="evidenceImageError" hidden>无法加载截图。</p>
+            </div>
+            <button id="evidenceNext" class="secondary" type="button" aria-label="下一张截图">›</button>
+          </div>
+          <div id="evidencePosition" role="status" class="mono" hidden></div>
+          <div id="evidenceThumbnails" role="group" aria-label="截图缩略图" hidden></div>
+        </div>
       </div>
     </dialog>
   </main>

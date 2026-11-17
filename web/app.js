@@ -22,8 +22,11 @@ const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour
 const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
 const resultTone = {pass:"pass",fail:"error",blocked:"error",error:"error",confirm:"review",review:"review",running:"active"};
+const finishedCases = new Set(["pass","fail","blocked","confirm","review","error"]);
 let queueFilter = "all";
 let queueSnapshot;
+let evidenceImages = [];
+let evidenceIndex = 0;
 let sheetChoice = "";
 let sheetRefreshError = "";
 let branchLookup;
@@ -122,13 +125,11 @@ function tick() {
 }
 
 function completion(job) {
-  if (job.config.mode === "branch" && job.items.length === 1) {
-    const cases = job.items[0].cases;
-    if (cases?.length) {
-      return [cases.filter(item=>["pass","fail","blocked"].includes(item.state)).length,cases.length,"用例"];
-    }
-    if (job.state === "running") return null;
+  if (job.items.length && job.items.every(item=>item.cases?.length)) {
+    const cases = job.items.flatMap(item=>item.cases);
+    return [cases.filter(test=>finishedCases.has(test.state)).length,cases.length,"用例"];
   }
+  if (job.config.mode === "branch" && job.state === "running" && job.items.length === 1) return null;
   return [job.items.filter(item=>item.result).length,job.items.length,"事项"];
 }
 
@@ -288,15 +289,7 @@ function renderDashboard() {
   set("online", `${view.nodes.filter(node => node.online).length} 台节点在线`);
   set("counts", `${view.jobs.filter(job=>job.state==="running").length} 批验收中 · ${view.jobs.filter(job=>job.state==="queued").length} 批排队`);
   nodeOptions();
-  const jobs = view.jobs.filter(job=>queueFilter==="all" || (queueFilter==="running" ?
-    ["running","review","disconnected"].includes(job.state) : job.state===queueFilter));
-  const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
-    job.config.sheet_name,job.config.method,job.config.server,nodeName(job.node || job.assigned),
-    job.started,job.ended,job.waiting || job.stage,job.stop_requested,canStop(job),completion(job)]));
-  if (snapshot!==queueSnapshot) {
-    queueSnapshot = snapshot;
-    renderQueue(jobs);
-  }
+  renderFilteredQueue();
   byId("nodes").replaceChildren(...view.nodes.map(node => {
     const row = document.createElement("li");
     const title = document.createElement("strong");
@@ -306,6 +299,30 @@ function renderDashboard() {
   }));
   renderRelease();
   tick();
+}
+
+function renderFilteredQueue() {
+  const normalize = value => String(value ?? "").normalize("NFKC").toLowerCase().replace(/[-_#]/g,"");
+  const terms = byId("queueSearch").value.trim().split(/\s+/).map(normalize).filter(Boolean);
+  const jobs = view.jobs.filter(job=>{
+    const matchesFilter = queueFilter==="all" || (queueFilter==="running" ?
+      ["running","review","disconnected"].includes(job.state) : job.state===queueFilter);
+    if (!matchesFilter || !terms.length) return matchesFilter;
+    const fields = [job.id,job.operator,job.config.branch,job.config.source,job.config.sheet_name,
+      job.config.server,job.config.method,nodeName(job.node || job.assigned),stateNames[job.state],
+      job.stage,job.state==="running" ? "验收中" : "",job.config.mode==="version" ? "版本日验收" : "分支验收",
+      ...job.items.flatMap(item=>[item.key,item.title,resultNames[item.result]])].map(normalize);
+    return terms.every(term=>fields.some(field=>field.includes(term)));
+  });
+  const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
+    job.config.sheet_name,job.config.method,job.config.server,nodeName(job.node || job.assigned),job.operator,
+    job.started,job.ended,job.waiting || job.stage,job.stop_requested,canStop(job),completion(job),
+    job.items.map(item=>item.result)]));
+  if (snapshot!==queueSnapshot) {
+    queueSnapshot = snapshot;
+    renderQueue(jobs);
+    tick();
+  }
 }
 
 function canStop(job) {
@@ -389,7 +406,22 @@ function renderQueue(jobs) {
     if (job.state==="queued") controls.append(jobAction(job,"delete","删除"));
     else if (canStop(job)) controls.append(stopJobAction(job));
     controls.append(open);
-    row.append(group,phase,jobStatus(job),controls);
+    const status = document.createElement("div");
+    status.className = "job-status";
+    status.append(jobStatus(job));
+    const verdict = document.createElement("div");
+    verdict.className = "job-verdict";
+    const results = Object.keys(resultNames).filter(result=>job.items.some(item=>item.result===result));
+    for (const result of results) {
+      const badge = checkResult(result);
+      if (results.length > 1) badge.append(" "+job.items.filter(item=>item.result===result).length);
+      verdict.append(badge);
+    }
+    if (!results.length) verdict.append(label("待出结果"));
+    const operator = document.createElement("span");
+    operator.className = "job-operator";
+    operator.textContent = job.operator || "未记录";
+    row.append(group,phase,status,verdict,operator,controls);
     return row;
   }));
   if (!jobs.length) set("queue","暂无符合条件的批次");
@@ -471,27 +503,60 @@ function renderPairings() {
   }));
 }
 
-function showEvidence(title, text, url) {
+function selectEvidenceImage(index) {
+  if (index < 0 || index >= evidenceImages.length) return;
+  evidenceIndex = index;
+  const image = byId("evidenceFullImage");
+  image.alt = `验收截图 ${index+1}`;
+  image.hidden = false;
+  byId("evidenceImageError").hidden = true;
+  image.src = evidenceImages[index];
+  byId("evidencePrevious").disabled = index === 0;
+  byId("evidenceNext").disabled = index === evidenceImages.length-1;
+  set("evidencePosition",`${index+1} / ${evidenceImages.length}`);
+  [...byId("evidenceThumbnails").children].forEach((button,position)=>{
+    if (position===index) button.setAttribute("aria-current","true");
+    else button.removeAttribute("aria-current");
+  });
+}
+
+function showEvidence(title, text, urls) {
   const dialog = byId("evidenceDialog");
   const content = byId("evidenceFullText");
-  const image = byId("evidenceFullImage");
   set("evidenceHeading",title);
   content.textContent = text;
   content.hidden = !text;
-  byId("evidenceImageError").hidden = true;
-  image.hidden = !url;
-  if (url) image.src = url;
-  else image.removeAttribute("src");
+  evidenceImages = urls;
+  byId("evidenceGallery").hidden = !urls.length;
+  const multiple = urls.length > 1;
+  for (const id of ["evidencePrevious","evidenceNext","evidencePosition","evidenceThumbnails"]) byId(id).hidden = !multiple;
+  const thumbnails = multiple ? urls.map((url,index)=>{
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "evidence-thumbnail";
+    button.setAttribute("aria-label",`查看第 ${index+1} 张截图`);
+    const image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.src = url;
+    button.append(image);
+    button.addEventListener("click",()=>selectEvidenceImage(index));
+    return button;
+  }) : [];
+  byId("evidenceThumbnails").replaceChildren(...thumbnails);
+  if (urls.length) selectEvidenceImage(0);
+  else byId("evidenceFullImage").removeAttribute("src");
+  dialog.scrollTop = 0;
   dialog.showModal();
 }
 
-function renderEvidence(cell, value, title, url) {
-  const text = (value || "").replace(/\s*[·；]\s*item-\d+-[A-Za-z0-9_-]+\.png\s*$/, "").trim();
-  if (!text && !url) return;
+function renderEvidence(cell, value, title, urls) {
+  const text = (value || "").replace(/\s*[·；]\s*item-\d+-[A-Za-z0-9_-]+(?:\.\d+)?\.png\b/g,"").trim();
+  if (!text && !urls.length) return;
   cell.className = "evidence-cell";
   const controls = document.createElement("div");
   controls.className = "evidence-controls";
-  if (url) {
+  if (urls.length) {
     const thumbnail = document.createElement("button");
     thumbnail.type = "button";
     thumbnail.className = "evidence-thumbnail";
@@ -499,9 +564,10 @@ function renderEvidence(cell, value, title, url) {
     const image = document.createElement("img");
     image.alt = "验收截图";
     image.loading = "lazy";
-    image.src = url;
+    image.src = urls[0];
     thumbnail.append(image);
-    thumbnail.addEventListener("click",()=>showEvidence(title,"",url));
+    if (urls.length > 1) thumbnail.dataset.count = urls.length;
+    thumbnail.addEventListener("click",()=>showEvidence(title,text,urls));
     controls.append(thumbnail);
   }
   if (text) {
@@ -516,7 +582,7 @@ function renderEvidence(cell, value, title, url) {
     action.className = "evidence-action";
     action.textContent = "全文";
     more.append(summary,action);
-    more.addEventListener("click",()=>showEvidence(title,text));
+    more.addEventListener("click",()=>showEvidence(title,text,urls));
     controls.append(more);
   }
   if (controls.childElementCount) cell.append(controls);
@@ -527,18 +593,26 @@ function renderChecklist(job) {
   if (snapshot === checklistSnapshot) return;
   checklistSnapshot = snapshot;
   const rows = document.createDocumentFragment();
+  const photosByCase = new Map();
+  for (const filename of job.screenshots || []) {
+    const stem = /^(item-\d+-[A-Za-z0-9_-]+)(?:\.\d+)?\.png$/.exec(filename)?.[1];
+    if (!stem) continue;
+    if (!photosByCase.has(stem)) photosByCase.set(stem,[]);
+    photosByCase.get(stem).push(`/api/jobs/${job.id}/screenshots/${filename}`);
+  }
   job.items.forEach((item,index)=>{
     const row = rows.appendChild(document.createElement("tr"));
     row.className = "checklist-item";
     row.insertCell().textContent = `${item.key} · ${item.title}`;
     row.insertCell().append(checkResult(item.result));
-    renderEvidence(row.insertCell(),item.evidence?.reason,item.key);
+    const photosFor = test => photosByCase.get(`item-${index+1}-${test.id}`) || [];
+    renderEvidence(row.insertCell(),item.evidence?.reason,item.key,(item.cases || []).flatMap(photosFor));
     if (!item.cases?.length) return;
 
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "case-toggle";
-    const completed = item.cases.filter(test=>["pass","fail","blocked"].includes(test.state)).length;
+    const completed = item.cases.filter(test=>finishedCases.has(test.state)).length;
     toggle.textContent = `测试用例 · 已处理 ${completed} / ${item.cases.length}`;
     row.cells[0].append(toggle);
 
@@ -556,9 +630,7 @@ function renderChecklist(job) {
       title.append(id,description);
       caseRow.insertCell().append(title);
       caseRow.insertCell().append(checkResult(test.state));
-      const screenshot = `item-${index+1}-${test.id}.png`;
-      const url = job.screenshots?.includes(screenshot) ? `/api/jobs/${job.id}/screenshots/${screenshot}` : "";
-      renderEvidence(caseRow.insertCell(),test.evidence,test.id,url);
+      renderEvidence(caseRow.insertCell(),test.evidence,test.id,photosFor(test));
       return caseRow;
     });
     toggle.setAttribute("aria-controls",cases.map(caseRow=>caseRow.id).join(" "));
@@ -602,8 +674,11 @@ async function refreshJob(id, generation) {
     const counts = completion(job);
     setProgress(byId("progress"),counts);
     set("progressCount",counts ? `${counts[0]} / ${counts[1]} ${counts[2]}` : "进度待确认");
-    set("summary",Object.entries(resultNames).map(([key,name]) =>
-      `${name} ${job.items.filter(item => item.result === key).length}`).join(" · ") + " · 未回写");
+    const isCaseProgress = counts?.[2] === "用例";
+    const outcomes = isCaseProgress ? job.items.flatMap(item=>item.cases.map(test=>test.state)) : job.items.map(item=>item.result);
+    const labels = isCaseProgress ? caseLabels : resultNames;
+    set("summary", Object.entries(labels).filter(([key])=>outcomes.includes(key)).map(([key,name]) =>
+      `${name} ${outcomes.filter(outcome=>outcome===key).length}`).concat("未回写").join(" · "));
     renderChecklist(job);
     tick();
   } catch(error) {
@@ -700,6 +775,13 @@ byId("evidenceFullImage").addEventListener("error",()=>{
   byId("evidenceFullImage").hidden = true;
   byId("evidenceImageError").hidden = false;
 });
+byId("evidencePrevious").addEventListener("click",()=>selectEvidenceImage(evidenceIndex-1));
+byId("evidenceNext").addEventListener("click",()=>selectEvidenceImage(evidenceIndex+1));
+byId("evidenceDialog").addEventListener("keydown",event=>{
+  if (evidenceImages.length <= 1 || !["ArrowLeft","ArrowRight"].includes(event.key)) return;
+  event.preventDefault();
+  selectEvidenceImage(evidenceIndex + (event.key==="ArrowLeft" ? -1 : 1));
+});
 themeChoices.find(input=>input.value===consoleAppearance.theme).checked = true;
 transparency.value = consoleAppearance.transparency;
 renderAppearance();
@@ -758,8 +840,9 @@ byId("queueFilters").addEventListener("click",event=>{
   if (!button) return;
   queueFilter = button.dataset.filter;
   byId("queueFilters").querySelectorAll("button").forEach(item=>item.setAttribute("aria-pressed",String(item===button)));
-  renderDashboard();
+  renderFilteredQueue();
 });
+byId("queueSearch").addEventListener("input",renderFilteredQueue);
 byId("summaryToggle").addEventListener("click",event=>{
   const button = event.currentTarget;
   const limited = button.getAttribute("aria-pressed")==="false";

@@ -6,11 +6,34 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
+from server import Console
+
 from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, FunctionReview, Node,
                     UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_saved_case_images_share_the_original_case_gallery(self):
+        with TemporaryDirectory() as temp:
+            attempt = "a" * 32
+            run = Path(temp) / attempt
+            run.mkdir()
+            items = [{"key": "NK-1", "cases": []}, {"key": "NK-2", "cases": [{"id": "TC-2"}]}]
+            path = run / "runtime.json"
+            save_json(path, {"batch": 22, "attempt": attempt, "server": "2903", "project": temp,
+                             "test_player": 1, "items": items})
+            tools = UnityTools(path)
+            tools.active = ("NK-2", "TC-2")
+            tools.capture_view = Mock(side_effect=[({}, b"first screenshot"), ({}, b"second screenshot")])
+            for name in ("item-2-TC-2.png", "item-2-TC-2.2.png"):
+                info, _ = tools.handle("capture_view", {"save": True})
+                self.assertEqual(info["evidence"], name)
+            (run / "item-2-unreported.2.png").write_bytes(b"another screenshot")
+            console = Console.__new__(Console)
+            console.local_evidence = ("mac", Path(temp))
+            job = {"id": 22, "attempt": attempt, "node": "mac", "items": items}
+            self.assertEqual(list(console.screenshots(job)), ["item-2-TC-2.png", "item-2-TC-2.2.png"])
+
     def test_project_checks_accept_flat_and_nested_repositories(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
