@@ -28,7 +28,9 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.14.4"
+UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
+UNITY_RUNTIME_CHECK = "Unity 自动实测"
+WORKER_VERSION = "0.14.5"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -165,7 +167,8 @@ class UnityBridge:
         ports = (self.port,) if self.port else self.manifest["ports"]
         for port in ports:
             try:
-                if self.request(port, binding) == self.assets:
+                assets = self.request(port, binding)
+                if isinstance(assets, str) and Path(assets) == Path(self.assets):
                     self.port = port
                     return self.request(port, body)
             except (OSError, ValueError):
@@ -831,6 +834,26 @@ def valid_environment_parameters(parameters):
     return True
 
 
+def test_roles(config):
+    roles = {}
+    for server, players in config.get("unity_test_roles", {}).items():
+        if not re.fullmatch(r"[1-9][0-9]{0,9}", server):
+            continue
+        if not isinstance(players, list):
+            players = [players]
+        allowed = list(dict.fromkeys(player for player in players if type(player) is int and 0 < player < 2**63))
+        if allowed:
+            roles[server] = allowed
+    return roles
+
+
+def has_windows_desktop():
+    import ctypes
+
+    session = ctypes.c_ulong()
+    return bool(ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)) and session.value)
+
+
 def command(args, cwd=None, timeout=30):
     return subprocess.run(args, cwd=cwd, text=True, encoding="utf-8", errors="replace",
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True)
@@ -1045,9 +1068,20 @@ class Node:
                 if editor and editor.is_file() and (editor_project / "ProjectSettings").is_dir():
                     self.checks.append({"label": "Unity", "ok": True, "detail": str(editor_project)})
                     self.caps.append("Unity")
-                    if self.os_name == "macOS" and self.config.get("unity_runtime"):
-                        self.checks.append({"label": "Mac 分支运行验收", "ok": True,
-                                            "detail": "填写测试服 ID 后使用已配置的 Unity 工程"})
+                    servers = list(test_roles(self.config))
+                    if not self.config.get("unity_runtime"):
+                        detail = "节点尚未启用运行验收。"
+                    elif not servers:
+                        detail = "节点尚未配置测试服和测试角色。"
+                    elif self.os_name == "Windows" and not has_windows_desktop():
+                        detail = "请在已登录的 Windows 桌面会话中启动 Worker。"
+                    else:
+                        detail = None
+                    self.checks.append({"label": UNITY_RUNTIME_CHECK, "ok": detail is None,
+                                        "detail": detail or "已配置测试服 " + "、".join(servers),
+                                        "servers": servers if detail is None else []})
+                    if detail is None:
+                        self.caps.append(UNITY_RUNTIME_CAPABILITY)
                 else:
                     self.checks.append({"label": "Unity", "ok": False, "detail": "检查 Unity Editor 路径和客户端项目。"})
             if "真机" in methods:
@@ -1339,8 +1373,9 @@ class Node:
         try:
             self.check_stopped()
             config = job["config"]
-            if (self.os_name == "macOS" and self.config.get("unity_runtime")
-                    and config["method"] == "Unity" and config["server"]):
+            if config["method"] == "Unity" and config["server"]:
+                if UNITY_RUNTIME_CAPABILITY not in self.caps or config["server"] not in test_roles(self.config):
+                    raise RuntimeError("该节点没有为指定测试服启用 Unity 自动实测。")
                 self.execute_unity(job, Path(root))
                 return
             self.event("stage_changed", text="正在核对技能与三端 Git 版本")
@@ -1468,15 +1503,7 @@ class Node:
                     "cases_file": str(run / "cases.json")}
         auto = "unity_test_roles" in self.config
         if auto:
-            roles = {}
-            for server, players in self.config["unity_test_roles"].items():
-                if not re.fullmatch(r"[1-9][0-9]{0,8}", server):
-                    continue
-                if not isinstance(players, list):
-                    players = [players]
-                allowed = list(dict.fromkeys(player for player in players if type(player) is int and 0 < player < 2**63))
-                if allowed:
-                    roles[server] = allowed
+            roles = test_roles(self.config)
             actions = {}
             for name, action in self.config.get("unity_environment_actions", {}).items():
                 if not isinstance(action, dict):
@@ -1651,7 +1678,7 @@ class Node:
             raise RuntimeError("FunctionReview 未生成可执行用例。")
         cases = json.loads(case_file.read_text(encoding="utf-8"))
         prompt = (
-            "你在独占的 Mac Unity 测试工程中，Worker 已进入 Play 并验证测试角色。"
+            "你在独占的 Unity 测试工程中，Worker 已进入 Play 并验证测试角色。"
             f"运行规则来自规划阶段使用的同一 FunctionReview 提交 {review['revision']}。"
             "按提供的规则执行前置核对、用例操作、补验和证据判定。遇到相关引用和功能经验时用 read_function_review 读取。"
             "本轮范围由下方 acceptance_scope 给定。Worker 已准备客户端和现有测试服连接，"
@@ -1736,10 +1763,14 @@ class Node:
             bridge.play(False)
         except (OSError, RuntimeError):
             pass
-        script = ('function run(argv) { ObjC.import("AppKit"); return '
-                  '$.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0])).terminate; }')
         try:
-            command(["/usr/bin/osascript", "-l", "JavaScript", "-e", script, str(launch.pid)], timeout=15)
+            if self.os_name == "Windows":
+                script = f"if (-not (Get-Process -Id {launch.pid} -ErrorAction Stop).CloseMainWindow()) {{ exit 1 }}"
+                command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=15)
+            else:
+                script = ('function run(argv) { ObjC.import("AppKit"); return '
+                          '$.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0])).terminate; }')
+                command(["/usr/bin/osascript", "-l", "JavaScript", "-e", script, str(launch.pid)], timeout=15)
             launch.wait(timeout=60)
         except subprocess.SubprocessError as error:
             raise RuntimeError("Unity 未能自动正常退出，工程保留待核对。") from error

@@ -225,7 +225,11 @@ function nodeOptions() {
 }
 
 function nodeStatus(node) {
-  return !node.online ? "离线" : node.busy ? "执行中" : node.capabilities.length ? "可用" : "检查配置";
+  if (!node.online) return "离线";
+  if (node.busy) return "执行中";
+  if (node.capabilities.includes("UnityRuntime")) return "可自动实测";
+  if (node.capabilities.includes("Unity")) return "Unity 联调可用";
+  return node.capabilities.length ? "可用" : "检查配置";
 }
 
 async function refreshState() {

@@ -21,7 +21,7 @@ import uuid
 
 from k1_sheet import SheetError, Workbook
 from release import MAX_WORKER_BYTES
-from worker import normalize_cases
+from worker import UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -31,6 +31,7 @@ APPEARANCE_ASSETS = {
 }
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
+CAPABILITIES = METHODS | {UNITY_RUNTIME_CAPABILITY}
 EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "case_snapshot",
           "execution_finished", "execution_error", "execution_stopped"}
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
@@ -50,6 +51,18 @@ class ApiError(Exception):
 
 def packed(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def supported_job(node, config):
+    if config["method"] not in node["capabilities"] or config["os"] and config["os"] != node["os"]:
+        return False
+    if config["method"] == "Unity" and config["server"]:
+        return UNITY_RUNTIME_CAPABILITY in node["capabilities"] and any(
+            check.get("label") == UNITY_RUNTIME_CHECK and check.get("ok") is True and
+            isinstance(check.get("servers"), list) and config["server"] in check["servers"]
+            for check in node["checks"]
+        )
+    return True
 
 
 def digest(token):
@@ -182,8 +195,10 @@ class Console:
                     job["waiting"] = "没有匹配节点"
                 elif not any(node["online"] for node in peers):
                     job["waiting"] = "等待节点上线"
-                elif not any(node["online"] and job["config"]["method"] in node["capabilities"] for node in peers):
-                    job["waiting"] = "等待节点配置或依赖检查"
+                elif not any(node["online"] and supported_job(node, job["config"]) for node in peers):
+                    job["waiting"] = ("等待具备该测试服 Unity 自动实测能力的节点"
+                                      if job["config"]["method"] == "Unity" and job["config"]["server"]
+                                      else "等待节点配置或依赖检查")
                 else:
                     job["waiting"] = "等待空闲节点接单"
             elif job["state"] == "running" and not any(n["id"] == job["node"] and n["online"] for n in nodes):
@@ -479,6 +494,8 @@ class Console:
                       purpose=self.config.get("profile", "integration"))
         if config["method"] not in METHODS or config["os"] not in {"", "macOS", "Windows"}:
             raise ApiError(400, "请选择有效的测试方式和平台。")
+        if config["method"] == "Unity" and config["server"] and not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
+            raise ApiError(400, "请填写有效的测试服 ID。")
         if any(body.get(key) for key in ("writeback_enabled", "auto_deploy", "auto_refresh_config")):
             raise ApiError(400, "本部署配置只允许关闭自动部署、配置转换和回写的联调。")
         if config["mode"] == "version":
@@ -515,9 +532,11 @@ class Console:
             if duplicate := prior(db):
                 return duplicate
             if assigned:
-                row = db.execute("SELECT os FROM nodes WHERE id=?", (assigned,)).fetchone()
+                row = db.execute("SELECT * FROM nodes WHERE id=?", (assigned,)).fetchone()
                 if not row or config["os"] and row["os"] != config["os"]:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
+                if (config["method"] == "Unity" and config["server"] and not supported_job(self.node(row), config)):
+                    raise ApiError(422, "指定节点尚未启用该测试服的 Unity 自动实测。")
             job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
                 SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),
                            COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?,?""",
@@ -576,7 +595,7 @@ class Console:
 
     def heartbeat(self, node, body):
         caps, checks = body.get("capabilities"), body.get("checks")
-        if (not isinstance(caps, list) or any(not isinstance(cap, str) or cap not in METHODS for cap in caps)
+        if (not isinstance(caps, list) or any(not isinstance(cap, str) or cap not in CAPABILITIES for cap in caps)
                 or not isinstance(checks, list) or len(checks) > 35 or any(not isinstance(c, dict) for c in checks)):
             raise ApiError(400, "节点检查回报格式无效。")
         release = self.release()
@@ -628,10 +647,10 @@ class Console:
                 return {"job": None}
             if db.execute("SELECT 1 FROM jobs WHERE node=? AND state IN ('running','review')", (node["id"],)).fetchone():
                 return {"job": None}
-            caps = json.loads(node["capabilities"])
+            profile = self.node(node)
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' AND (assigned IS NULL OR assigned=?) ORDER BY id", (node["id"],)):
                 config = json.loads(row["config"])
-                if config["method"] not in caps or config["os"] and config["os"] != node["os"]:
+                if not supported_job(profile, config):
                     continue
                 attempt = uuid.uuid4().hex
                 db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=? WHERE id=?",

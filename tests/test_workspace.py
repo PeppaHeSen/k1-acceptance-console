@@ -9,11 +9,23 @@ from unittest.mock import Mock, patch
 
 from server import Console
 
-from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, FunctionReview, Node,
+from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, FunctionReview, Node,
                     UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_windows_runtime_claim_does_not_fall_back_to_integration(self):
+        node = Node.__new__(Node)
+        node.os_name = "Windows"
+        node.caps = ["Unity", UNITY_RUNTIME_CAPABILITY]
+        node.config = {"unity_runtime": True, "unity_test_roles": {"2903": 1}}
+        node.persist = Mock()
+        node.check_stopped = Mock()
+        node.execute_unity = Mock()
+        job = {"id": 29, "attempt": "fixture", "config": {"method": "Unity", "server": "2903"}}
+        node.execute({"job": job, "root": "D:/K1Project"})
+        node.execute_unity.assert_called_once_with(job, Path("D:/K1Project"))
+
     def test_saved_case_images_share_the_original_case_gallery(self):
         with TemporaryDirectory() as temp:
             attempt = "a" * 32

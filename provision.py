@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--node-root", type=Path)
     parser.add_argument("--unity-editor", type=Path)
     parser.add_argument("--unity-runtime", action="store_true",
-                        help="Enable isolated Unity branch runs on a Mac with a desktop session")
+                        help="Enable Unity acceptance in a macOS or Windows desktop session")
     parser.add_argument("--claude")
     parser.add_argument("--join-url", help="HTTPS address of the main server for a node-only install")
     parser.add_argument("--node-id", help="Use an existing manually issued node identifier")

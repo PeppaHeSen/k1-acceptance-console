@@ -6,10 +6,33 @@ import unittest
 from unittest.mock import patch
 
 from server import ApiError, Console
-from worker import ExecutionStopped, Node
+from worker import ExecutionStopped, Node, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK
 
 
 class QueueActionsTest(unittest.TestCase):
+    def test_runtime_job_waits_for_a_node_with_the_requested_test_server(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+            enrolled = console.create_node({"name": "QA", "os": "Windows"})
+            node = console.agent(enrolled["id"], enrolled["token"])
+            console.configure_node(node["id"], {"root": "C:/QA"})
+            beat = {"root": "C:/QA", "os": "Windows", "capabilities": ["Unity"], "checks": []}
+            console.heartbeat(node, beat)
+            request = {"mode": "branch", "source": "NK-9705", "branch": "dev_NK-9705",
+                       "method": "Unity", "server": "2903", "request": "verify-runtime-routing"}
+            with self.assertRaisesRegex(ApiError, "自动实测"):
+                console.submit({**request, "node": node["id"]})
+            job_id = console.submit(request)["id"]
+            self.assertIsNone(console.claim(node)["job"])
+            self.assertIn("自动实测", console.state()["jobs"][0]["waiting"])
+            beat["capabilities"].append(UNITY_RUNTIME_CAPABILITY)
+            beat["checks"] = [{"label": UNITY_RUNTIME_CHECK, "ok": True, "servers": ["2904"]}]
+            console.heartbeat(node, beat)
+            self.assertIsNone(console.claim(node)["job"])
+            beat["checks"][0]["servers"].append("2903")
+            console.heartbeat(node, beat)
+            self.assertEqual(console.claim(node)["job"]["id"], job_id)
+
     def test_linked_merge_request_can_resolve_a_differently_named_branch(self):
         key = "NK-9705"
         sha = "a" * 40
