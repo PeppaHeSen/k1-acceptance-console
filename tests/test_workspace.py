@@ -9,6 +9,23 @@ from worker import Node, UnityTools, acceptance_checkout, command, save_json
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_game_view_resize_checks_screenshot_pixels_instead_of_screen_dimensions(self):
+        with TemporaryDirectory() as temp:
+            run = Path(temp)
+            manifest = run / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": str(run), "test_player": 1})
+            tools = UnityTools(manifest)
+            tools.bridge.code = Mock(side_effect=[0, True, True])
+            old = {"width": 1080, "height": 2160, "language": "cn"}
+            requested = {"width": 768, "height": 1024, "language": "cn"}
+            with patch.object(tools, "capture_view", side_effect=[(old, b"old"), (requested, b"new")]), \
+                    patch("worker.time.sleep"):
+                self.assertEqual(tools.set_game_view(768, 1024), (requested, b"new"))
+            original = run / "game-view-original.json"
+            self.assertEqual(json.loads(original.read_text(encoding="utf-8")), 0)
+            tools.restore_game_view()
+            self.assertFalse(original.exists())
+
     def test_auto_result_blocks_unexecuted_cases(self):
         with TemporaryDirectory() as temp:
             run = Path(temp)
