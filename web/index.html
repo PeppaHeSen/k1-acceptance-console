@@ -218,6 +218,10 @@
           <h2><button type="button" id="logToggle" aria-expanded="false" aria-controls="logEntries"><span aria-hidden="true">›</span> AI 输出与执行记录</button></h2>
           <label class="log-follow" id="logFollowControl" hidden><input id="followLog" type="checkbox" checked>跟随最新</label>
         </div>
+        <details class="ai-prompt" id="aiPrompt" hidden>
+          <summary>发给 AI 的提示词</summary>
+          <pre id="aiPromptText"></pre>
+        </details>
         <div id="logEntries" role="log" aria-label="带时间的执行记录" tabindex="0" hidden></div>
       </section>
     </section>

@@ -244,6 +244,10 @@
   .log-follow input { margin: 0; }
   #logEntries { flex: 1 1 0; min-height: 0; overflow: auto; padding: 5px 16px 12px; border-top: 1px solid var(--line); }
   #logEntries:focus-visible { outline-offset: -3px; }
+  .log.collapsed .ai-prompt { display: none; }
+  .ai-prompt { padding: 9px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+  .ai-prompt summary { cursor: pointer; color: var(--console-blue); }
+  .ai-prompt pre { margin: 8px 0 0; max-height: 42vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
   .entry { display: grid; grid-template-columns: 75px 42px minmax(0,1fr); gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
   .entry:last-child { border-bottom: 0; }
   .entry time { color: var(--console-muted); font-size: 12px; }

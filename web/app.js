@@ -722,6 +722,11 @@ function renderRoute(navigating = false) {
   stream?.close();
   logs.clear();
   byId("logEntries").replaceChildren();
+  const promptDetails = byId("aiPrompt");
+  const promptText = byId("aiPromptText");
+  promptDetails.open = false;
+  promptDetails.hidden = true;
+  promptText.replaceChildren();
   if (!id) return;
   const generation = detailGeneration;
   refreshJob(id,generation);
@@ -734,6 +739,11 @@ function renderRoute(navigating = false) {
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
+    if (data.kind === "ai_prompt") {
+      promptText.append(document.createTextNode(payload.text));
+      promptDetails.hidden = false;
+      return;
+    }
     const line = document.createElement("div");
     line.className = live && !reducedMotion.matches ? "entry is-new" : "entry";
     const stamp = document.createElement("time");

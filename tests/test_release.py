@@ -26,7 +26,9 @@ class ReleaseFlowTest(unittest.TestCase):
             request = {"mode":"branch","branch":"dev_NK-9705","source":"NK-9705","method":"Unity",
                        "node":node_id,"request":"sample-branch-job-0001"}
             job_id = console.submit(request)["id"]
-            claim = console.claim(node)["job"]
+            response = console.claim(node)
+            self.assertIn("ai_prompt", response["features"])
+            claim = response["job"]
             self.assertEqual(claim["id"],job_id)
             self.assertIsNotNone(claim["started"])
             release = publish(config_file,PROJECT,"a"*40,"改善运行队列")
@@ -41,10 +43,14 @@ class ReleaseFlowTest(unittest.TestCase):
                 return console.event(node,{"attempt":claim["attempt"],"kind":kind,"seq":seq,"payload":payload})
 
             snapshot = [{"id":"TC-1","title":"布阵显示半身像","state":"pass","evidence":"截图"}]
-            event(1,"case_snapshot",key="NK-9705",cases=snapshot)
+            prompt = ["原始验收要求\n\n", "  <资料>保留格式</资料>\n"]
+            for seq, part in enumerate(prompt, 1):
+                event(seq, "ai_prompt", text=part)
+            self.assertEqual([json.loads(entry["payload"])["text"] for entry in console.events(job_id, 0)], prompt)
+            event(3,"case_snapshot",key="NK-9705",cases=snapshot)
             self.assertEqual(console.detail(job_id)["items"][0]["cases"], snapshot)
-            event(2,"item_finished",key="NK-9705",result="pass",evidence={"reason":"通过"})
-            event(3,"execution_finished",process_exited=True)
+            event(4,"item_finished",key="NK-9705",result="pass",evidence={"reason":"通过"})
+            event(5,"execution_finished",process_exited=True)
             finished = console.detail(job_id)
             self.assertGreaterEqual(finished["ended"], finished["started"])
             console.submit({**request,"request":"sample-branch-job-0002"})

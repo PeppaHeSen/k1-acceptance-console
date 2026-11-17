@@ -32,7 +32,7 @@ APPEARANCE_ASSETS = {
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
 CAPABILITIES = METHODS | {UNITY_RUNTIME_CAPABILITY}
-EVENTS = {"execution_started", "stage_changed", "ai_output", "item_finished", "case_snapshot",
+EVENTS = {"execution_started", "stage_changed", "ai_output", "ai_prompt", "item_finished", "case_snapshot",
           "execution_finished", "execution_error", "execution_stopped"}
 RESULTS = {"pass", "fail", "blocked", "review", "error"}
 HEARTBEAT_TIMEOUT = 30
@@ -656,7 +656,7 @@ class Console:
                 db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=? WHERE id=?",
                            (node["id"], attempt, "节点已接单", time.time(), row["id"]))
                 job = self.job(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
-                return {"job": job, "root": node["root"]}
+                return {"job": job, "root": node["root"], "features": ["ai_prompt"]}
         return {"job": None}
 
     def event(self, node, body):
@@ -664,6 +664,8 @@ class Console:
         payload = body.get("payload")
         if kind not in EVENTS or type(seq) is not int or seq < 1 or not isinstance(payload, dict):
             raise ApiError(400, "执行事件格式无效。")
+        if kind == "ai_prompt" and (not isinstance(payload.get("text"), str) or not 0 < len(payload["text"]) <= 16000):
+            raise ApiError(400, "AI 提示词片段格式无效。")
         value = packed(payload)
         with self.db(write=True) as db:
             row = db.execute("SELECT * FROM jobs WHERE attempt=? AND node=?", (attempt, node["id"])).fetchone()

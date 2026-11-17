@@ -1524,6 +1524,9 @@ class Node:
             try:
                 process.stdin.write(prompt)
                 process.stdin.close()
+                if self.attempt.get("record_prompt"):
+                    for offset in range(0, len(prompt), 16000):
+                        self.event("ai_prompt", text=prompt[offset:offset + 16000])
                 last_flush = time.monotonic()
                 for line in process.stdout:
                     try:
@@ -1566,7 +1569,8 @@ class Node:
 
     def execute(self, claim):
         job, root = claim["job"], claim["root"]
-        self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": []}
+        self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": [],
+                        "record_prompt": "ai_prompt" in claim.get("features", [])}
         self.persist()
         try:
             self.check_stopped()
