@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.8"
+WORKER_VERSION = "0.14.9"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -109,7 +109,7 @@ if (dialog != null)
     if (target == null) return "loading";
     UnityEngine.EventSystems.ExecuteEvents.Execute(target.gameObject,
         new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current),
-        UnityEngine.EventSystems.pointerClickHandler);
+        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
     return "confirmed";
 }
 if (__SELECTED__) return "loading";
@@ -270,6 +270,10 @@ class UnityBridge:
                               "kind": "call", "args": [{"action": "execute", "code": code, "safety_checks": True}]})
         if not isinstance(result, dict) or not result.get("success"):
             detail = result.get("message") or result.get("error") if isinstance(result, dict) else result
+            if isinstance(result, dict) and isinstance(result.get("data"), dict):
+                errors = result["data"].get("errors")
+                if isinstance(errors, list) and errors:
+                    detail = f"{detail} · {errors[0]}"
             raise RuntimeError("Unity 未执行操作：" + str(detail)[:250])
         return result.get("data", {}).get("result")
 
