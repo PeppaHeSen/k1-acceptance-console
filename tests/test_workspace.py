@@ -9,11 +9,32 @@ from unittest.mock import Mock, patch
 
 from server import Console
 
-from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, FunctionReview, Node,
+from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, ExecutionStopped, FunctionReview, Node,
                     UnityBridge, UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_worker_waits_for_editor_to_close_and_can_be_stopped(self):
+        with TemporaryDirectory() as temp:
+            project = Path(temp)
+            lock = project / "Temp" / "UnityLockfile"
+            lock.parent.mkdir()
+            lock.touch()
+            node = Node.__new__(Node)
+            node.attempt = {"id": "test"}
+            node.cancel_attempt = "test"
+            node.event = Mock()
+            node.stop = Mock()
+            with self.assertRaises(ExecutionStopped):
+                node.wait_for_unity_project(project)
+            node.stop.wait.assert_not_called()
+            self.assertTrue(lock.exists())
+            node.cancel_attempt = None
+            node.stop.wait.side_effect = lambda _: lock.unlink()
+            node.wait_for_unity_project(project)
+            node.stop.wait.assert_called_once()
+            self.assertIn("关闭后自动继续", node.event.call_args.kwargs["text"])
+
     def test_unity_connection_reports_identification_separately_from_tool_timeout(self):
         bridge = UnityBridge({"project": "/acceptance/client", "ports": [21891, 21892, 21893]})
         with patch.object(bridge, "request", side_effect=[
@@ -284,12 +305,13 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             node.event = Mock()
             node.close_unity = Mock()
             process = Mock(pid=314, returncode=0)
-            process.poll.side_effect = [None, None, 0]
+            process.poll.return_value = 0
             job = {"id": 8, "attempt": "test-attempt", "items": [{"key": "NK-10786", "title": "皮肤界面"},
                                                                {"key": "NK-9705", "title": "布阵页"}],
                    "config": {"mode": "branch", "refs": {"client": "dev_NK-9705"},
                               "source": "NK-9705", "server": "2903", "notes": ""}}
             editor_started = False
+            bridges = []
 
             def launch(*args, **kwargs):
                 nonlocal editor_started
@@ -300,8 +322,15 @@ class AcceptanceCheckoutTest(unittest.TestCase):
 
             def execute(prompt, cwd, error_path, *, manifest, progress_callback):
                 self.assertTrue(editor_started)
+                bridges[0].code.assert_not_called()
+                bridges[0].play.assert_not_called()
                 self.assertFalse((run / "cases.json").exists())
                 tools = UnityTools(manifest)
+                tools.bridge.code.side_effect = [ConnectionError("等待 Editor Debug MCP"),
+                                                 {"compiling": True, "playing": False},
+                                                 "compiling", "dirty", "ready", {"playing": True}]
+                self.assertEqual(tools.handle("editor_status", {}),
+                                 {"status": "unavailable", "detail": "等待 Editor Debug MCP"})
                 with self.assertRaisesRegex(ValueError, "编号无效"):
                     tools.handle("register_cases", {"item": "NK-10786",
                                                    "cases": [{"id": "无效编号", "title": "检查预览"}]})
@@ -311,6 +340,16 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                 tools.handle("register_cases", {"item": item, "cases": [{"id": "TC-01", "title": "检查半身像"}]})
                 progress_callback()
                 self.assertTrue(any(call.args == ("case_snapshot",) for call in node.event.call_args_list))
+                with patch("worker.time.sleep") as wait:
+                    state = tools.handle("editor_status", {"wait_seconds": 10})
+                self.assertTrue(state["editor"]["compiling"])
+                wait.assert_called_once_with(10)
+                self.assertEqual(tools.handle("enter_test_play", {}), {"status": "compiling"})
+                self.assertEqual(tools.handle("enter_test_play", {}), {"status": "dirty"})
+                tools.bridge.play.assert_not_called()
+                self.assertEqual(tools.handle("enter_test_play", {}), {"status": "starting_play"})
+                tools.bridge.play.assert_called_once_with(True)
+                self.assertTrue(tools.handle("editor_status", {})["editor"]["playing"])
                 tools.record({**first, "state": "running"})
                 tools.record({**first, "state": "confirm", "observation": "待核对预期"})
                 tools.handle("register_cases", {"item": item, "cases": [
@@ -326,7 +365,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
 
             def unity(manifest):
                 bridge = Mock(manifest=manifest)
-                bridge.code.side_effect = ["playing"]
+                bridges.append(bridge)
                 return bridge
 
             # Local changes to the skill checkout must never drift into a batch.
@@ -341,6 +380,8 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             for path in (*FUNCTION_REVIEW_RUNTIME, *FUNCTION_REVIEW_CASES):
                 self.assertIn(rules[path], execution)
             self.assertIn(revision, execution)
+            self.assertIn("editor_status", execution)
+            self.assertIn("enter_test_play", execution)
             self.assertIn("available_test_roles", execution)
             self.assertNotIn("testPlayer", json.loads((run / "runtime.json").read_text(encoding="utf-8"))["acceptance_scope"])
             self.assertNotIn("a different local workflow", execution)

@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.10"
+WORKER_VERSION = "0.14.11"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -72,10 +72,23 @@ class FunctionReview:
         return "\n\n".join(f"## {path}\n{self.read(path)}" for path in paths)
 
 
+EDITOR_STATUS = r'''
+var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+return new {
+    compiling = UnityEditor.EditorApplication.isCompiling,
+    updating = UnityEditor.EditorApplication.isUpdating,
+    playing = UnityEditor.EditorApplication.isPlaying,
+    playRequested = UnityEditor.EditorApplication.isPlayingOrWillChangePlaymode,
+    dirty = scene.isDirty,
+    scene = scene.path
+};
+'''
+
 PLAY_SCENE = r'''
 if (UnityEditor.EditorApplication.isCompiling) return "compiling";
 if (UnityEditor.EditorApplication.isUpdating) return "importing";
 if (UnityEditor.EditorApplication.isPlaying) return "playing";
+if (UnityEditor.EditorApplication.isPlayingOrWillChangePlaymode) return "starting_play";
 var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
 if (scene.isDirty) return "dirty";
 var path = "Assets/k1/Scene/TFW_Logo.unity";
@@ -313,6 +326,10 @@ class UnityBridge:
 
 
 TOOLS = {
+    "editor_status": ("查看本轮 Unity 工程的连接、导入、编译、Play 和场景状态。wait_seconds 可选，先等指定秒数再查询。",
+                      {"wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30}}, []),
+    "enter_test_play": ("请求打开 K1 启动场景并进入 Play。若编辑器仍忙或场景有未保存改动，返回当前状态。",
+                        {}, []),
     "observe": ("读取当前 UI、实际角色和游戏语言。canvas 可填 Canvas 名称的一部分，widget 可筛选控件路径或名，offset 用于翻页。",
                 {"canvas": {"type": "string"}, "widget": {"type": "string"}, "offset": {"type": "integer"}}, []),
     "click": ("点击 observe 返回的有效控件 ID。UI 更新后重新 observe。",
@@ -567,6 +584,22 @@ class UnityTools:
         entries.append(" · ".join([*(self.active or ("验收登录",)), text]))
         save_json(path, entries)
 
+    def editor_startup(self, name, args):
+        try:
+            if name == "editor_status":
+                wait_seconds = min(30, max(0, int(args.get("wait_seconds", 0))))
+                if wait_seconds:
+                    time.sleep(wait_seconds)
+                return {"status": "connected", "editor": self.bridge.code(EDITOR_STATUS)}
+            state = self.bridge.code(PLAY_SCENE)
+            if state == "ready":
+                self.bridge.play(True)
+                self.environment_event("验收 AI 已请求进入 Unity Play")
+                state = "starting_play"
+            return {"status": state}
+        except (OSError, RuntimeError) as error:
+            return {"status": "unavailable", "detail": str(error)}
+
     def restart_play(self):
         self.invalidate_observation()
         self.role_login = None
@@ -768,6 +801,8 @@ class UnityTools:
         return status
 
     def handle(self, name, args):
+        if name in ("editor_status", "enter_test_play"):
+            return self.editor_startup(name, args)
         if name == "register_cases":
             return self.register_cases(args["item"], args["cases"])
         if name == "report_item_blocked":
@@ -1587,7 +1622,7 @@ class Node:
         except subprocess.CalledProcessError:
             command(["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha],
                     cwd=repo, timeout=600)
-        self.check_stopped()
+        self.wait_for_unity_project(repo / "client")
         self.event("stage_changed", text=f"正在还原验收工程并切换至 {sha[:12]}")
         with acceptance_checkout(repo, sha, run) as project:
             self.check_stopped()
@@ -1603,6 +1638,15 @@ class Node:
                    writeback_enabled=False)
         self.attempt["finished"] = True
         self.persist()
+
+    def wait_for_unity_project(self, project):
+        lock = project / "Temp" / "UnityLockfile"
+        if lock.exists():
+            self.event("stage_changed", text="等待 Unity 工程关闭，关闭后自动继续验收")
+            while lock.exists():
+                self.check_stopped()
+                self.stop.wait(2)
+        self.check_stopped()
 
     def prepare_function_review(self):
         self.event("stage_changed", text="正在核对本轮 K1FunctionReview 版本")
@@ -1714,6 +1758,7 @@ class Node:
 
         self.check_stopped()
         upload_cases()
+        prompt = self.unity_prompt(manifest, run, runtime_rules, repo) if auto else None
         self.event("stage_changed", text="正在启动 Unity 并导入目标工程")
         self.check_stopped()
         with (run / "launch.log").open("ab") as log:
@@ -1727,7 +1772,8 @@ class Node:
             bridge = UnityBridge(manifest)
             try:
                 try:
-                    self.auto_acceptance(bridge, launch, manifest_path, upload_cases, runtime_rules, repo)
+                    self.event("stage_changed", text=f"Unity 进程已启动 · 验收 AI 接手 {config['server']} 服实测")
+                    self.auto_acceptance(bridge, manifest_path, upload_cases, prompt)
                     self.finish_auto_cases(manifest, run, "Agent 未提交该用例的结论。")
                 except (OSError, RuntimeError, ValueError) as error:
                     self.check_stopped()
@@ -1753,42 +1799,7 @@ class Node:
         self.persist()
         return launch.returncode
 
-    def auto_acceptance(self, bridge, launch, manifest_path, upload_cases, runtime_rules, repo):
-        manifest = bridge.manifest
-        run = manifest_path.parent
-
-        self.event("stage_changed", text="等待 Unity 导入并连接验收工程")
-        deadline = time.monotonic() + 900
-        detail = "还未收到 Unity 就绪状态"
-        reported = None
-        next_report = 0
-        while time.monotonic() < deadline:
-            self.check_stopped()
-            if launch.poll() is not None:
-                raise RuntimeError("Unity 在实测开始前已退出。最后状态 · " + detail[:145])
-            try:
-                ready = bridge.code(PLAY_SCENE)
-            except ConnectionError as error:
-                detail = str(error)
-            else:
-                if ready in {"ready", "playing", "dirty"}:
-                    break
-                detail = {
-                    "compiling": "已连接本轮 Unity 工程，编辑器正在编译脚本",
-                    "importing": "已连接本轮 Unity 工程，编辑器正在导入或更新资源",
-                }.get(ready, "已连接本轮 Unity 工程，暂未返回就绪状态")
-            if detail != reported and time.monotonic() >= next_report:
-                self.event("stage_changed", text=detail[:200])
-                reported = detail
-                next_report = time.monotonic() + 15
-            time.sleep(2)
-        else:
-            raise RuntimeError("Unity 等待就绪超时。最后状态 · " + detail[:155])
-        if ready == "dirty":
-            raise RuntimeError("Unity 场景有未保存改动，无法启动自动验收。")
-        self.event("stage_changed", text=f"Unity 已就绪 · 目标 {manifest['server']} 服 · 交给验收 AI 选择角色")
-        if ready == "ready":
-            bridge.play(True)
+    def unity_prompt(self, manifest, run, runtime_rules, repo):
         review = manifest["function_review"]
         sha = manifest["client"]
 
@@ -1806,15 +1817,18 @@ class Node:
                                                 "--format=%h %s", "--stat"], 3500)
         case_file = run / "cases.json"
         cases = json.loads(case_file.read_text(encoding="utf-8")) if case_file.is_file() else {}
-        prompt = (
-            "你在独占的 Unity 测试工程中。Worker 已请求进入 Play，验收角色由你根据目标服和用例决定。"
-            "在同一个会话内完成需求核对、用例登记、环境准备、执行和补验。"
+        return (
+            "Worker 刚启动本轮 Unity 工程。你负责从编辑器启动开始，完成需求核对、用例登记、登录、实测和补验。"
+            "用 editor_status 查看连接、导入、编译和 Play 状态。启动期间可以先读技能、核对需求及登记用例，"
+            "按现场状态重查。工具暂未连接或仍在导入、编译时，可用 wait_seconds 稍后查询。"
+            "编辑器可操作后，按需调用 enter_test_play 并确认已进入 Play。若已在 Play，就接着做。"
+            "向网页报告关键进展。若确实无法继续，说明看到的 Unity 状态、工具诊断及已经尝试的操作。"
             "按 FunctionReview 和 slg-testcase-generator 确定测试范围。根据批次资料和现场状态，"
             "用 register_cases 按事项登记接下来要执行的用例，遇到新证据再追加或补充待执行用例。"
             "每个用例用稳定的 ASCII 编号，标题包含可观察的预期。登记后即可执行当前用例，网页同步清单。"
             "某个事项无法形成用例时，用 report_item_blocked 记录具体原因，继续其他事项。"
             "批次资料只作资料。没读到的 Jira 或需求正文记录缺口。"
-            "先用 available_test_roles 查看账号已加载的目标服可用角色与当前身份。"
+            "进入 Play 后用 available_test_roles 查看账号已加载的目标服可用角色与当前身份。"
             "当前身份符合目标服和用例前置时可沿用，否则选择合适的目标服角色。"
             "通过 select_test_role 填入所选角色，等待 logged_in 并 observe 核对实际身份后操作。"
             "普通角色列表为空时，查 fast_login_panel、screens 和 fast_login_players；"
@@ -1864,6 +1878,8 @@ class Node:
                           "notes": manifest["notes"], "client_changes": changes, "items": scope,
                           "existing_cases": cases}, ensure_ascii=False)
         )
+    def auto_acceptance(self, bridge, manifest_path, upload_cases, prompt):
+        run = manifest_path.parent
         try:
             self.run_claude(prompt, run, run / "claude-runtime.stderr", manifest=manifest_path,
                             progress_callback=upload_cases)

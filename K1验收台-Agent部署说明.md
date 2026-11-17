@@ -41,9 +41,9 @@ python3 worker.py --config <节点运行目录>/node.json
 
 在有桌面登录会话的 Mac 或 Windows 节点上启用。首次部署加入 `--unity-runtime`。已有节点在本机 `node.json` 中设置 `"unity_runtime": true`，配置测试服后，在用户的桌面会话中重启 Worker。网页配置向导中的「Unity」表示 Editor 和工程可读，「Unity 自动实测」显示已配置的测试服。提交分支或版本日验收时，填写测试服 ID，队列只会分配给支持该测试服自动实测的节点。
 
-把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
+Worker 使用节点已配置的客户端工程。若该工程正被 Unity 占用，批次会等待编辑器关闭，再继续准备工程。Worker 记录原分支和提交，还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。服务端与配置通过实测环境核对。
 
-Worker 接单后冻结一个 K1FunctionReview 提交，启动 Unity 并连接调试接口后只发起一次验收 AI 会话。Agent 在这次会话中使用同一提交的 `review-k1-function`、`slg-testcase-generator`、运行验收和屏幕适配规则。它可以按事项通过 `register_cases` 登记或追加用例，并用 `case_progress` 上报状态。新用例初始为「待执行」，清单、执行结果和 Claude 输出实时回传网页。Agent 可用 `read_function_review` 补查同一提交的引用和已有功能经验。
+Worker 接单后冻结一个 K1FunctionReview 提交，本轮只发起一次验收 AI 会话。Agent 在这次会话中使用同一提交的 `review-k1-function`、`slg-testcase-generator`、运行验收和屏幕适配规则。它可以按事项通过 `register_cases` 登记或追加用例，并用 `case_progress` 上报状态。新用例初始为「待执行」，清单、执行结果和 Claude 输出实时回传网页。Agent 可用 `read_function_review` 补查同一提交的引用和已有功能经验。
 
 网页选择的功能验收、版本日验收分别对应 FunctionReview 的 `development`、`mainline_regression`。自动验收在 Unity 中执行。Agent 在遇到缺少前置的用例时按技能查找现有条件，按需重登、切换测试身份，或使用节点上已配置的环境准备动作。准备过程、回执和用例结果进入批次执行记录，截图保存在执行节点的运行目录。
 
@@ -53,7 +53,7 @@ Worker 接单后冻结一个 K1FunctionReview 提交，启动 Unity 并连接调
 
 动作脚本从标准输入读取一条 JSON，包含 `batch`、`attempt`、`item`、`case`、`action`、`server`、`player`、`client`、`refs`、`function_review`、`parameters` 和 `operation`。脚本可复用该提交里的 FunctionReview GM 或 Jenkins 流程。同一次执行中，同动作、同参数会得到同一个 `operation`，脚本按它保存回执，重复调用时查询或复用已提交的动作。标准输出只返回 `{"status":"ready|pending|blocked","evidence":"可展示的回执摘要"}`。长时间的部署可先返回 `pending`，Agent 可以暂放该用例，跑其他独立用例后再查询。回执摘要会显示在网页，凭据、原始部署参数和敏感日志留在节点本地。Agent 收到 `ready` 后还要验证用例需要的业务前置。
 
-Worker 等待工程导入并进入 Play，再交给验收 Agent 检查登录情况、按需切换角色及执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 关闭 Unity、还原工程并回传结果。省略测试服 ID 可提交基础链路联调。版本日可填写一个 Jira 单号，仅排队该项。
+Worker 启动 Unity 后立即启动本轮验收 Agent。Agent 查看工程连接、导入及编译状态，期间可按 FunctionReview 登记用例，再按实际状态进入 Play、选择测试角色及执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 关闭 Unity、还原工程并回传结果。省略测试服 ID 可提交基础链路联调。版本日可填写一个 Jira 单号，仅排队该项。
 
 屏幕适配用例在 Unity Game 窗口逐个应用目标分辨率并核对实际画面，Worker 在退出前恢复原尺寸。语言用例通过游戏内设置切换，客户端重启后接续同一测试角色，结束时恢复原语言。需要英雄或战力时，Agent 可以在指定的测试角色上通过正常玩法获得英雄、领取免费奖励和使用已有普通资源升级。英雄获得和升级可能保留在测试角色上。正式业务源码、数据表和线上热更属于独立流程。
 
