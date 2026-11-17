@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.11"
+WORKER_VERSION = "0.14.12"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -326,6 +326,8 @@ class UnityBridge:
 
 
 TOOLS = {
+    "start_unity": ("请求启动本轮已准备的 Unity 工程。若该工程已有编辑器，返回 attached 并复用。",
+                    {}, []),
     "editor_status": ("查看本轮 Unity 工程的连接、导入、编译、Play 和场景状态。wait_seconds 可选，先等指定秒数再查询。",
                       {"wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30}}, []),
     "enter_test_play": ("请求打开 K1 启动场景并进入 Play。若编辑器仍忙或场景有未保存改动，返回当前状态。",
@@ -598,6 +600,11 @@ class UnityTools:
                 state = "starting_play"
             return {"status": state}
         except (OSError, RuntimeError) as error:
+            status_path = self.run / "unity-start.json"
+            if name == "editor_status" and status_path.is_file():
+                start = json.loads(status_path.read_bytes())
+                if start["status"] == "launch_failed":
+                    return start
             return {"status": "unavailable", "detail": str(error)}
 
     def restart_play(self):
@@ -801,6 +808,13 @@ class UnityTools:
         return status
 
     def handle(self, name, args):
+        if name == "start_unity":
+            if "existingEditor" in self.manifest["acceptance_scope"]:
+                return {"status": "attached"}
+            path = self.run / "unity-start.json"
+            if not path.is_file():
+                save_json(path, {"status": "requested"})
+            return json.loads(path.read_bytes())
         if name in ("editor_status", "enter_test_play"):
             return self.editor_startup(name, args)
         if name == "register_cases":
@@ -1617,36 +1631,39 @@ class Node:
             self.check_stopped()
             raise RuntimeError(f"无法读取客户端分支 {ref}。") from error
         self.check_stopped()
-        try:
-            command(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo)
-        except subprocess.CalledProcessError:
-            command(["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha],
-                    cwd=repo, timeout=600)
-        self.wait_for_unity_project(repo / "client")
-        self.event("stage_changed", text=f"正在还原验收工程并切换至 {sha[:12]}")
-        with acceptance_checkout(repo, sha, run) as project:
+        project = repo / "client"
+        revision = sha
+        if (project / "Temp" / "UnityLockfile").exists():
+            revision = command(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+            modified = bool(command(["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"],
+                                    cwd=repo).stdout.strip())
+            self.event("stage_changed", text=f"复用已打开的 Unity · 当前 {revision[:12]} · 目标 {sha[:12]}"
+                       + (" · 含本地跟踪文件改动" if modified else ""))
+            exit_code = self.launch_unity(job, revision, project, run, repo, snapshot, runtime_rules,
+                                          attached={"target": sha, "modified": modified})
+            conclusion = "Unity 实测结束，已保留现有编辑器"
+        else:
+            try:
+                command(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo)
+            except subprocess.CalledProcessError:
+                command(["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha],
+                        cwd=repo, timeout=600)
             self.check_stopped()
-            exit_code = self.launch_unity(job, sha, project, run, repo, snapshot, runtime_rules)
-            self.event("stage_changed", text="正在还原验收改动并切回原客户端分支")
+            self.event("stage_changed", text=f"正在还原验收工程并切换至 {sha[:12]}")
+            with acceptance_checkout(repo, sha, run) as project:
+                self.check_stopped()
+                exit_code = self.launch_unity(job, sha, project, run, repo, snapshot, runtime_rules)
+                self.event("stage_changed", text="正在还原验收改动并切回原客户端分支")
+            conclusion = "Unity 实测结束，原工程已恢复"
         self.check_stopped()
-        reports = self.unity_result(run, config, sha, exit_code, [item["key"] for item in job["items"]])
+        reports = self.unity_result(run, config, revision, exit_code, [item["key"] for item in job["items"]])
         for item in job["items"]:
             self.check_stopped()
             report = reports[item["key"]]
             self.event("item_finished", key=item["key"], result=report["result"], evidence=report)
-        self.event("execution_finished", process_exited=True, conclusion="Unity 实测结束，原工程已恢复",
-                   writeback_enabled=False)
+        self.event("execution_finished", process_exited=True, conclusion=conclusion, writeback_enabled=False)
         self.attempt["finished"] = True
         self.persist()
-
-    def wait_for_unity_project(self, project):
-        lock = project / "Temp" / "UnityLockfile"
-        if lock.exists():
-            self.event("stage_changed", text="等待 Unity 工程关闭，关闭后自动继续验收")
-            while lock.exists():
-                self.check_stopped()
-                self.stop.wait(2)
-        self.check_stopped()
 
     def prepare_function_review(self):
         self.event("stage_changed", text="正在核对本轮 K1FunctionReview 版本")
@@ -1665,21 +1682,22 @@ class Node:
         self.check_stopped()
         return snapshot, rules
 
-    def launch_unity(self, job, sha, project, run, repo, snapshot, runtime_rules):
+    def launch_unity(self, job, sha, project, run, repo, snapshot, runtime_rules, *, attached=None):
         config = job["config"]
         ref = config["refs"]["client"]
         if not (project / "ProjectSettings" / "ProjectVersion.txt").is_file():
             raise RuntimeError("目标提交缺少 Unity 工程。")
-        editor = Path(self.config["unity_editor"])
-        version = project.joinpath("ProjectSettings/ProjectVersion.txt").read_text(encoding="utf-8")
-        expected = re.search(r"^m_EditorVersion:\s*(\S+)", version, re.MULTILINE)
-        if not expected or expected[1] not in editor.parts:
-            raise RuntimeError("节点配置的 Unity 版本与目标工程要求不一致。")
+        if attached is None:
+            editor = Path(self.config["unity_editor"])
+            version = project.joinpath("ProjectSettings/ProjectVersion.txt").read_text(encoding="utf-8")
+            expected = re.search(r"^m_EditorVersion:\s*(\S+)", version, re.MULTILINE)
+            if not expected or expected[1] not in editor.parts:
+                raise RuntimeError("节点配置的 Unity 版本与目标工程要求不一致。")
         manifest = {"batch": job["id"], "attempt": job["attempt"], "source": config["source"],
                     "server": config["server"], "client": sha, "project": str(project),
                     "reference_branches": config["refs"], "notes": config["notes"], "items":job["items"],
                     "cases_file": str(run / "cases.json")}
-        auto = config["server"] in test_servers(self.config)
+        auto = attached is not None or config["server"] in test_servers(self.config)
         if auto:
             roles = test_roles(self.config)
             actions = {}
@@ -1711,13 +1729,15 @@ class Node:
             "server": config["server"],
             "environmentPreparation": "runtime", "writeback": False,
         }
+        if attached is not None:
+            manifest["acceptance_scope"]["existingEditor"] = attached
         if snapshot:
             manifest["function_review"] = snapshot
         self.check_stopped()
         manifest_path = run / "runtime.json"
         save_json(manifest_path, manifest)
         self.event("execution_started", contract_version=API_VERSION, root=str(project),
-                   versions={"client": {"branch": ref, "target": sha, "local": sha}},
+                   versions={"client": {"branch": ref, "target": attached["target"] if attached else sha, "local": sha}},
                    runtime={"server": config["server"], "manifest": str(run / "runtime.json")})
         case_file = run / "cases.json"
         previous_cases = {}
@@ -1759,21 +1779,43 @@ class Node:
         self.check_stopped()
         upload_cases()
         prompt = self.unity_prompt(manifest, run, runtime_rules, repo) if auto else None
-        self.event("stage_changed", text="正在启动 Unity 并导入目标工程")
-        self.check_stopped()
-        with (run / "launch.log").open("ab") as log:
-            launch = subprocess.Popen(
-                [str(editor), "-projectPath", str(project), "-logFile", str(run / "unity.log")],
-                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            )
-        self.attempt["pid"] = launch.pid
-        self.persist()
+        launch = None
+
+        def start_editor():
+            nonlocal launch
+            self.check_stopped()
+            with (run / "launch.log").open("ab") as log:
+                launch = subprocess.Popen(
+                    [str(editor), "-projectPath", str(project), "-logFile", str(run / "unity.log")],
+                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                )
+            self.attempt["pid"] = launch.pid
+            self.persist()
+
+        def sync_runtime():
+            self.check_stopped()
+            request = run / "unity-start.json"
+            if attached is None and launch is None and request.is_file():
+                if json.loads(request.read_bytes())["status"] == "requested":
+                    try:
+                        start_editor()
+                    except OSError as error:
+                        detail = f"Unity 启动失败：{error}"[:200]
+                        save_json(request, {"status": "launch_failed", "detail": detail})
+                        self.event("stage_changed", text=detail)
+                    else:
+                        save_json(request, {"status": "started"})
+                        self.event("stage_changed", text="验收 AI 已启动 Unity")
+            upload_cases()
+
         if auto:
             bridge = UnityBridge(manifest)
             try:
                 try:
-                    self.event("stage_changed", text=f"Unity 进程已启动 · 验收 AI 接手 {config['server']} 服实测")
-                    self.auto_acceptance(bridge, manifest_path, upload_cases, prompt)
+                    self.check_stopped()
+                    editor_status = " · 复用已打开的 Unity" if attached else ""
+                    self.event("stage_changed", text=f"验收 AI 接手 {config['server']} 服实测{editor_status}")
+                    self.auto_acceptance(bridge, manifest_path, sync_runtime, prompt)
                     self.finish_auto_cases(manifest, run, "Agent 未提交该用例的结论。")
                 except (OSError, RuntimeError, ValueError) as error:
                     self.check_stopped()
@@ -1781,11 +1823,14 @@ class Node:
                     self.finish_auto_cases(manifest, run, str(error)[:450])
                 upload_cases()
             finally:
-                self.close_unity(bridge, launch)
-                if launch.poll() is not None:
-                    self.attempt.pop("pid", None)
-                    self.persist()
-            return launch.returncode
+                if launch is not None:
+                    self.close_unity(bridge, launch)
+                    if launch.poll() is not None:
+                        self.attempt.pop("pid", None)
+                        self.persist()
+            return launch.returncode if launch is not None else 0
+        self.event("stage_changed", text="正在启动 Unity 并导入目标工程")
+        start_editor()
         ready = False
         with self.watch_stop(launch):
             while launch.poll() is None:
@@ -1818,7 +1863,11 @@ class Node:
         case_file = run / "cases.json"
         cases = json.loads(case_file.read_text(encoding="utf-8")) if case_file.is_file() else {}
         return (
-            "Worker 刚启动本轮 Unity 工程。你负责从编辑器启动开始，完成需求核对、用例登记、登录、实测和补验。"
+            "本轮 Unity 工程已交给你。你负责启动或接入 Unity、核对需求、登记用例、登录、实测和补验。"
+            "如果未复用已打开的工程，先调用 start_unity，启动期间可以读技能和登记用例。"
+            "acceptance_scope.existingEditor 存在时，沿用已打开的编辑器。client 为实际工作树提交，"
+            "existingEditor.target 是批次目标提交，modified 表示有跟踪文件改动。"
+            "版本有差异时记录实际覆盖，继续可验证的用例，单独说明哪些必须用目标版本补验。"
             "用 editor_status 查看连接、导入、编译和 Play 状态。启动期间可以先读技能、核对需求及登记用例，"
             "按现场状态重查。工具暂未连接或仍在导入、编译时，可用 wait_seconds 稍后查询。"
             "编辑器可操作后，按需调用 enter_test_play 并确认已进入 Play。若已在 Play，就接着做。"
@@ -1905,6 +1954,11 @@ class Node:
         file = run / "cases.json"
         cases = json.loads(file.read_text(encoding="utf-8")) if file.is_file() else {}
         blockers = Node.item_blockers(run)
+        attached = manifest.get("acceptance_scope", {}).get("existingEditor")
+        version_note = ""
+        if attached and (attached["target"] != manifest["client"] or attached["modified"]):
+            version_note = (f"复用打开的工程，当前 {manifest['client'][:12]}，目标 {attached['target'][:12]}"
+                            + ("，含本地跟踪文件改动" if attached["modified"] else ""))
         reports = {}
         for item in manifest["items"]:
             key = item["key"]
@@ -1920,7 +1974,8 @@ class Node:
             else:
                 summary = blockers.get(key, "未登记用例 · " + reason)
             observations = [f"{c['id']} {c['evidence']}" for c in entries if c["evidence"]]
-            reports[key] = {"result": status, "reason": "。".join([summary, *observations])[:2000],
+            report_notes = [part for part in (version_note, summary, *observations) if part]
+            reports[key] = {"result": status, "reason": "。".join(report_notes)[:2000],
                             "evidence": str(file if entries else run / "runtime.json")}
         if cases:
             save_json(file, cases)

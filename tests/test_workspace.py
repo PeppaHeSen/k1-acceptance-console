@@ -9,31 +9,59 @@ from unittest.mock import Mock, patch
 
 from server import Console
 
-from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, ExecutionStopped, FunctionReview, Node,
+from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, FunctionReview, Node,
                     UnityBridge, UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
-    def test_worker_waits_for_editor_to_close_and_can_be_stopped(self):
+    def test_worker_attaches_to_open_editor_without_switching_commits_or_closing_it(self):
         with TemporaryDirectory() as temp:
-            project = Path(temp)
+            root = Path(temp)
+            project = root / "k1_client" / "client"
             lock = project / "Temp" / "UnityLockfile"
-            lock.parent.mkdir()
+            lock.parent.mkdir(parents=True)
             lock.touch()
+            settings = project / "ProjectSettings"
+            settings.mkdir()
+            (settings / "ProjectVersion.txt").touch()
+            (root / "runtime").mkdir()
             node = Node.__new__(Node)
+            node.state = root
+            node.config = {"unity_test_servers": ["2903"]}
             node.attempt = {"id": "test"}
-            node.cancel_attempt = "test"
-            node.event = Mock()
-            node.stop = Mock()
-            with self.assertRaises(ExecutionStopped):
-                node.wait_for_unity_project(project)
-            node.stop.wait.assert_not_called()
-            self.assertTrue(lock.exists())
             node.cancel_attempt = None
-            node.stop.wait.side_effect = lambda _: lock.unlink()
-            node.wait_for_unity_project(project)
-            node.stop.wait.assert_called_once()
-            self.assertIn("关闭后自动继续", node.event.call_args.kwargs["text"])
+            node.event = Mock()
+            node.persist = Mock()
+            node.prepare_function_review = Mock(return_value=({"revision": "skill"}, "rules"))
+            node.unity_prompt = Mock(return_value="run acceptance")
+            def use_existing(prompt, cwd, error_path, *, manifest, progress_callback):
+                self.assertEqual(UnityTools(manifest).handle("start_unity", {}), {"status": "attached"})
+                progress_callback()
+
+            node.run_claude = Mock(side_effect=use_existing)
+            node.close_unity = Mock()
+            actual, target = "a" * 40, "b" * 40
+            job = {"id": 8, "attempt": "test", "items": [{"key": "NK-9705", "title": "布阵页"}],
+                   "config": {"mode": "version", "refs": {"client": "dev"},
+                              "source": "", "server": "2903", "notes": ""}}
+            with patch("worker.resolve_repository", return_value=project.parent), \
+                    patch("worker.command", side_effect=[Mock(stdout=target), Mock(stdout=actual),
+                                                         Mock(stdout=" M client/file.cs")]) as git, \
+                    patch("worker.acceptance_checkout") as checkout, patch("worker.subprocess.Popen") as popen:
+                node.execute_unity(job, root)
+            self.assertEqual([call.args[0][1] for call in git.call_args_list],
+                             ["ls-remote", "rev-parse", "--no-optional-locks"])
+            checkout.assert_not_called()
+            popen.assert_not_called()
+            node.close_unity.assert_not_called()
+            node.run_claude.assert_called_once()
+            self.assertTrue(lock.exists())
+            manifest = json.loads((root / "runtime/test/runtime.json").read_bytes())
+            self.assertEqual(manifest["client"], actual)
+            self.assertEqual(manifest["acceptance_scope"]["existingEditor"], {"target": target, "modified": True})
+            result = json.loads((root / "runtime/test/result.json").read_bytes())
+            self.assertEqual(result["client"], actual)
+            self.assertIn("含本地跟踪文件改动", result["items"]["NK-9705"]["reason"])
 
     def test_unity_connection_reports_identification_separately_from_tool_timeout(self):
         bridge = UnityBridge({"project": "/acceptance/client", "ports": [21891, 21892, 21893]})
@@ -321,11 +349,15 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                 return process
 
             def execute(prompt, cwd, error_path, *, manifest, progress_callback):
-                self.assertTrue(editor_started)
+                self.assertFalse(editor_started)
                 bridges[0].code.assert_not_called()
                 bridges[0].play.assert_not_called()
                 self.assertFalse((run / "cases.json").exists())
                 tools = UnityTools(manifest)
+                self.assertEqual(tools.handle("start_unity", {}), {"status": "requested"})
+                progress_callback()
+                self.assertTrue(editor_started)
+                self.assertEqual(tools.handle("start_unity", {}), {"status": "started"})
                 tools.bridge.code.side_effect = [ConnectionError("等待 Editor Debug MCP"),
                                                  {"compiling": True, "playing": False},
                                                  "compiling", "dirty", "ready", {"playing": True}]
@@ -380,6 +412,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             for path in (*FUNCTION_REVIEW_RUNTIME, *FUNCTION_REVIEW_CASES):
                 self.assertIn(rules[path], execution)
             self.assertIn(revision, execution)
+            self.assertIn("start_unity", execution)
             self.assertIn("editor_status", execution)
             self.assertIn("enter_test_play", execution)
             self.assertIn("available_test_roles", execution)
