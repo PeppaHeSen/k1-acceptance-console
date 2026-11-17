@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.9"
+WORKER_VERSION = "0.14.10"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -73,7 +73,8 @@ class FunctionReview:
 
 
 PLAY_SCENE = r'''
-if (UnityEditor.EditorApplication.isCompiling || UnityEditor.EditorApplication.isUpdating) return "importing";
+if (UnityEditor.EditorApplication.isCompiling) return "compiling";
+if (UnityEditor.EditorApplication.isUpdating) return "importing";
 if (UnityEditor.EditorApplication.isPlaying) return "playing";
 var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
 if (scene.isDirty) return "dirty";
@@ -247,23 +248,52 @@ class UnityBridge:
                           {"Content-Type": "application/json"})
         with self.http.open(request, timeout=12) as reply:
             data = json.loads(reply.read(2 * 1024 * 1024))
+        if not isinstance(data, dict):
+            raise ValueError("Unity 调试接口响应格式无效。")
         if not data.get("ok"):
-            raise RuntimeError("Unity 调试接口未完成操作。")
+            raise RuntimeError(f"Unity 调试接口拒绝请求（{str(data.get('error') or '未返回原因')[:100]}）")
         return data.get("result")
 
     def invoke(self, body):
         binding = {"type": "UnityEngine.Application", "member": "dataPath", "kind": "get"}
         ports = (self.port,) if self.port else self.manifest["ports"]
+        diagnostics = []
         for port in ports:
             try:
                 assets = self.request(port, binding)
-                if isinstance(assets, str) and Path(assets) == Path(self.assets):
-                    self.port = port
-                    return self.request(port, body)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                diagnostics.append(f"{port} 工程识别请求失败（{self.request_error(error)}）")
                 continue
+            except RuntimeError as error:
+                diagnostics.append(f"{port} 工程识别失败（{error}）")
+                continue
+            if not isinstance(assets, str) or Path(assets) != Path(self.assets):
+                diagnostics.append(f"{port} 返回的 Assets 不是本轮工程（{str(assets)[:70]}）")
+                continue
+            self.port = port
+            try:
+                return self.request(port, body)
+            except (OSError, ValueError) as error:
+                raise ConnectionError(
+                    f"{port} 已识别本轮工程，调试操作请求失败（{self.request_error(error)}）"
+                ) from error
+            except RuntimeError as error:
+                raise RuntimeError(f"{port} 已识别本轮工程 · {error}") from error
         self.port = None
-        raise ConnectionError("验收工程的 Unity 调试接口尚未就绪。")
+        raise ConnectionError("Unity 调试接口尚未就绪 · " + " · ".join(diagnostics))
+
+    @staticmethod
+    def request_error(error):
+        if isinstance(error, HTTPError):
+            return f"HTTP {error.code}"
+        cause = error.reason if isinstance(error, URLError) else error
+        if isinstance(cause, ConnectionRefusedError):
+            return "连接被拒绝"
+        if isinstance(cause, TimeoutError):
+            return "等待响应超时"
+        if isinstance(cause, ValueError):
+            return "响应格式无效"
+        return type(cause).__name__
 
     def code(self, code):
         result = self.invoke({"type": "MCPForUnity.Editor.Tools.ExecuteCode", "member": "HandleCommand",
@@ -1727,24 +1757,33 @@ class Node:
         manifest = bridge.manifest
         run = manifest_path.parent
 
-        def wait_for(callback, states, seconds, timeout_error):
-            until = time.monotonic() + seconds
-            while time.monotonic() < until:
-                self.check_stopped()
-                if launch.poll() is not None:
-                    raise RuntimeError("Unity 在实测开始前已退出。")
-                try:
-                    state = callback()
-                    if state in states:
-                        return state
-                except ConnectionError:
-                    pass
-                time.sleep(2)
-            raise RuntimeError(timeout_error)
-
         self.event("stage_changed", text="等待 Unity 导入并连接验收工程")
-        ready = wait_for(lambda: bridge.code(PLAY_SCENE), {"ready", "playing", "dirty"}, 900,
-                         "Unity 导入或调试连接超时。")
+        deadline = time.monotonic() + 900
+        detail = "还未收到 Unity 就绪状态"
+        reported = None
+        next_report = 0
+        while time.monotonic() < deadline:
+            self.check_stopped()
+            if launch.poll() is not None:
+                raise RuntimeError("Unity 在实测开始前已退出。最后状态 · " + detail[:145])
+            try:
+                ready = bridge.code(PLAY_SCENE)
+            except ConnectionError as error:
+                detail = str(error)
+            else:
+                if ready in {"ready", "playing", "dirty"}:
+                    break
+                detail = {
+                    "compiling": "已连接本轮 Unity 工程，编辑器正在编译脚本",
+                    "importing": "已连接本轮 Unity 工程，编辑器正在导入或更新资源",
+                }.get(ready, "已连接本轮 Unity 工程，暂未返回就绪状态")
+            if detail != reported and time.monotonic() >= next_report:
+                self.event("stage_changed", text=detail[:200])
+                reported = detail
+                next_report = time.monotonic() + 15
+            time.sleep(2)
+        else:
+            raise RuntimeError("Unity 等待就绪超时。最后状态 · " + detail[:155])
         if ready == "dirty":
             raise RuntimeError("Unity 场景有未保存改动，无法启动自动验收。")
         self.event("stage_changed", text=f"Unity 已就绪 · 目标 {manifest['server']} 服 · 交给验收 AI 选择角色")

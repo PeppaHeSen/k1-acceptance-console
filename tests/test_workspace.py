@@ -10,10 +10,19 @@ from unittest.mock import Mock, patch
 from server import Console
 
 from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, FunctionReview, Node,
-                    UnityTools, acceptance_checkout, command, resolve_repository, save_json)
+                    UnityBridge, UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_unity_connection_reports_identification_separately_from_tool_timeout(self):
+        bridge = UnityBridge({"project": "/acceptance/client", "ports": [21891, 21892, 21893]})
+        with patch.object(bridge, "request", side_effect=[
+            "/another/client/Assets", ConnectionRefusedError(), bridge.assets, TimeoutError()
+        ]) as request:
+            with self.assertRaisesRegex(ConnectionError, "21893 已识别本轮工程，调试操作请求失败（等待响应超时）"):
+                bridge.invoke({"member": "HandleCommand"})
+        self.assertEqual([call.args[0] for call in request.call_args_list], [21891, 21892, 21893, 21893])
+
     def test_windows_runtime_claim_does_not_fall_back_to_integration(self):
         node = Node.__new__(Node)
         node.os_name = "Windows"
