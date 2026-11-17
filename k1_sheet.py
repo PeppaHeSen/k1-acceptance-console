@@ -6,6 +6,9 @@ import subprocess
 from threading import Lock
 
 
+JIRA_KEY = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b", re.ASCII)
+
+
 class SheetError(Exception):
     pass
 
@@ -63,17 +66,22 @@ class Workbook:
         if any(header.count(name) != 1 for name in required):
             raise SheetError("进包表表头缺少唯一的内容、状态、合并状态或 JIRA 单列。")
         columns = {name: header.index(name) for name in required}
-        result, seen = [], set()
+        entries = {}
         for index, cells_at_row in enumerate(cells[1:], 2):
             row = values(cells_at_row)
             fields = {name: row[col] if col < len(row) else "" for name, col in columns.items()}
             if fields["状态"] != "待验收" or fields["合并状态"] != "已合进dev":
                 continue
-            keys = set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", fields["JIRA单"].upper()))
-            if len(keys) != 1 or keys & seen:
-                raise SheetError(f"进包表第 {index} 行的 Jira 单无法唯一定位。")
-            key = keys.pop()
-            seen.add(key)
-            result.append({"key": key, "title": fields["内容"], "row": index,
-                           "status": fields["状态"], "merge": fields["合并状态"]})
-        return result
+            keys = dict.fromkeys(JIRA_KEY.findall(fields["JIRA单"].upper()))
+            if not keys:
+                raise SheetError(f"进包表第 {index} 行缺少有效的 Jira 单号。")
+            for key in keys:
+                entry = entries.setdefault(key, {
+                    "key": key, "row": index, "status": fields["状态"],
+                    "merge": fields["合并状态"], "source_rows": [],
+                })
+                entry["source_rows"].append({"row": index, "title": fields["内容"]})
+        for entry in entries.values():
+            titles = dict.fromkeys(source["title"] for source in entry["source_rows"] if source["title"])
+            entry["title"] = "；".join(titles)
+        return list(entries.values())
