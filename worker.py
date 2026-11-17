@@ -28,7 +28,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.13.1"
+WORKER_VERSION = "0.13.2"
 CASE_PLAN_SCHEMA = {
     "type": "object", "required": ["summary", "items"], "additionalProperties": False,
     "properties": {
@@ -147,7 +147,7 @@ class UnityBridge:
 
 
 TOOLS = {
-    "observe": ("读取当前 UI 和实际角色。canvas 可填 Canvas 名称的一部分，widget 可筛选控件路径或名，offset 用于翻页。",
+    "observe": ("读取当前 UI、实际角色和游戏语言。canvas 可填 Canvas 名称的一部分，widget 可筛选控件路径或名，offset 用于翻页。",
                 {"canvas": {"type": "string"}, "widget": {"type": "string"}, "offset": {"type": "integer"}}, []),
     "click": ("点击 observe 返回的有效控件 ID。UI 更新后重新 observe。",
               {"id": {"type": "integer"}}, ["id"]),
@@ -214,7 +214,6 @@ var lineup = displayed.Where(c => c.name.StartsWith("UITowerDefenseHeroSel"))
             .Select(i => i.sprite.name).FirstOrDefault() }).Take(8).ToArray();
 return new { server = Logic.LPlayer.I.ServerId, player = Logic.LPlayer.I.PlayerID,
     language = TFW.Localization.LocalizationMgr.CurrentLanguage,
-    width = UnityEngine.Screen.width, height = UnityEngine.Screen.height,
     canvases = canvases.Select(c => c.name).Take(24).ToArray(), controls, animators, lineup };
 '''
 
