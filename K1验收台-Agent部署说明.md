@@ -43,7 +43,7 @@ python3 worker.py --config <节点运行目录>/node.json
 
 把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
 
-Worker 接单后冻结一个 K1FunctionReview 提交。用例生成和实测共用该提交里的 `review-k1-function`、运行验收、客户端路径及多语言与屏幕适配规则。用例生成另外读取同一提交的 `slg-testcase-generator` 及 K1 用例规则。Agent 可按需用 `read_function_review` 从该提交读取引用和已有功能经验。批次执行记录和 `runtime.json` 记录技能提交及远端核对状态。用例初始状态为「待执行」，Claude 输出和用例进度会回传网页。
+Worker 接单后冻结一个 K1FunctionReview 提交，启动 Unity 并连接调试接口后只发起一次验收 AI 会话。Agent 在这次会话中使用同一提交的 `review-k1-function`、`slg-testcase-generator`、运行验收和屏幕适配规则。它可以按事项通过 `register_cases` 登记或追加用例，并用 `case_progress` 上报状态。新用例初始为「待执行」，清单、执行结果和 Claude 输出实时回传网页。Agent 可用 `read_function_review` 补查同一提交的引用和已有功能经验。
 
 网页选择的功能验收、版本日验收分别对应 FunctionReview 的 `development`、`mainline_regression`。自动验收在 Unity 中执行。Agent 在遇到缺少前置的用例时按技能查找现有条件，按需重登、切换测试身份，或使用节点上已配置的环境准备动作。准备过程、回执和用例结果进入批次执行记录，截图保存在执行节点的运行目录。
 

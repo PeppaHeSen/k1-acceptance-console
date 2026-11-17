@@ -241,7 +241,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertEqual(source.read_text(), "existing version\n")
             self.assertEqual(untracked.read_text(), "node notes\n")
 
-    def test_unity_publishes_ai_case_plan_before_starting_editor(self):
+    def test_one_agent_registers_and_reports_cases_during_unity_run(self):
         with TemporaryDirectory() as temp:
             base = Path(temp)
             project = base / "client"
@@ -273,10 +273,6 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             node.check_skill = lambda: skill
             node.sync_skill = Mock(return_value=(skill, revision, True))
             node.event = Mock()
-            node.run_claude = Mock(side_effect=[{"summary": "已准备验收清单", "items": [
-                {"key": "NK-10786", "cases": [{"id": "无效编号", "title": "检查预览"}]},
-                {"key": "NK-9705", "cases": [{"id": "TC-01", "title": "检查半身像"}]},
-            ]}, None])
             node.close_unity = Mock()
             process = Mock(pid=314, returncode=0)
             process.poll.side_effect = [None, None, 0]
@@ -284,16 +280,35 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                                                                {"key": "NK-9705", "title": "布阵页"}],
                    "config": {"mode": "branch", "refs": {"client": "dev_NK-9705"},
                               "source": "NK-9705", "server": "2903", "notes": ""}}
-            report_plan_error = Mock()
+            editor_started = False
 
             def launch(*args, **kwargs):
+                nonlocal editor_started
                 if args[0][0] == "git":
                     return Popen(*args, **kwargs)
-                self.assertTrue((run / "cases.json").is_file())
-                self.assertTrue(any(call.args == ("case_snapshot",) for call in node.event.call_args_list))
-                self.assertEqual(report_plan_error.call_args.args[0], "NK-10786")
-                self.assertIn("第 1 条用例编号无效", report_plan_error.call_args.args[1])
+                editor_started = True
                 return process
+
+            def execute(prompt, cwd, error_path, *, manifest, progress_callback):
+                self.assertTrue(editor_started)
+                self.assertFalse((run / "cases.json").exists())
+                tools = UnityTools(manifest)
+                with self.assertRaisesRegex(ValueError, "编号无效"):
+                    tools.handle("register_cases", {"item": "NK-10786",
+                                                   "cases": [{"id": "无效编号", "title": "检查预览"}]})
+                tools.handle("report_item_blocked", {"item": "NK-10786", "reason": "缺预览规则"})
+                item = "NK-9705"
+                first = {"item": item, "case": "TC-01"}
+                tools.handle("register_cases", {"item": item, "cases": [{"id": "TC-01", "title": "检查半身像"}]})
+                progress_callback()
+                self.assertTrue(any(call.args == ("case_snapshot",) for call in node.event.call_args_list))
+                tools.record({**first, "state": "running"})
+                tools.record({**first, "state": "confirm", "observation": "待核对预期"})
+                tools.handle("register_cases", {"item": item, "cases": [
+                    {"id": "TC-01", "title": "检查半身像"}, {"id": "TC-02", "title": "检查候选列表"}]})
+                progress_callback()
+
+            node.run_claude = Mock(side_effect=execute)
 
             def git(args, cwd=None, timeout=30):
                 if cwd == skill:
@@ -310,16 +325,12 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             with patch("worker.command", side_effect=git), patch("worker.UnityBridge", side_effect=unity), \
                     patch("worker.subprocess.Popen", launch):
                 snapshot, runtime_rules = node.prepare_function_review()
-                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules,
-                                                  report_plan_error), 0)
+                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules), 0)
             node.sync_skill.assert_called_once_with(skill)
-            planning, execution = (call.args[0] for call in node.run_claude.call_args_list)
-            for path in FUNCTION_REVIEW_RUNTIME:
-                self.assertIn(rules[path], planning)
+            node.run_claude.assert_called_once()
+            execution = node.run_claude.call_args.args[0]
+            for path in (*FUNCTION_REVIEW_RUNTIME, *FUNCTION_REVIEW_CASES):
                 self.assertIn(rules[path], execution)
-            for path in FUNCTION_REVIEW_CASES:
-                self.assertIn(rules[path], planning)
-            self.assertIn(revision, planning)
             self.assertIn(revision, execution)
             self.assertIn("available_test_roles", execution)
             self.assertNotIn("testPlayer", json.loads((run / "runtime.json").read_text(encoding="utf-8"))["acceptance_scope"])
@@ -331,9 +342,9 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                 FunctionReview(manifest["function_review"]).read("review-k1-function/references/../../secret.md")
             snapshots = [call.kwargs["cases"] for call in node.event.call_args_list if call.args == ("case_snapshot",)]
             self.assertEqual(snapshots[0], [{"id": "TC-01", "title": "检查半身像", "state": "pending", "evidence": ""}])
-            self.assertEqual(snapshots[1][0]["state"], "blocked")
-            report_plan_error.assert_called_once()
+            self.assertEqual([c["state"] for c in snapshots[1]], ["confirm", "pending"])
+            self.assertEqual([c["state"] for c in snapshots[-1]], ["confirm", "blocked"])
             reports = json.loads((run / "result.json").read_text(encoding="utf-8"))["items"]
             self.assertEqual(reports["NK-10786"]["result"], "blocked")
-            self.assertIn("第 1 条用例编号无效", reports["NK-10786"]["reason"])
-            self.assertNotIn("第 1 条用例编号无效", reports["NK-9705"]["reason"])
+            self.assertEqual(reports["NK-10786"]["reason"], "缺预览规则")
+            self.assertIn("待核对预期", reports["NK-9705"]["reason"])
