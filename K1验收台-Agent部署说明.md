@@ -43,7 +43,9 @@ python3 worker.py --config <节点运行目录>/node.json
 
 把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
 
-Worker 接单后从同一个 K1FunctionReview 提交读取 `review-k1-function`、`slg-testcase-generator` 和 K1 本地用例规则，结合目标客户端提交启动 Claude Code 准备用例。用例初始状态为「待执行」，Claude 输出和用例进度会回传网页。分支和版本日共用这套用例生成流程。
+Worker 接单后冻结一个 K1FunctionReview 提交。用例生成和实测共用该提交里的 `review-k1-function`、运行验收、客户端路径及多语言与屏幕适配规则。用例生成另外读取同一提交的 `slg-testcase-generator` 及 K1 用例规则。Agent 可按需用 `read_function_review` 从该提交读取引用和已有功能经验。批次执行记录和 `runtime.json` 记录技能提交及远端核对状态。用例初始状态为「待执行」，Claude 输出和用例进度会回传网页。
+
+网页选择的功能验收、版本日验收分别对应 FunctionReview 的 `development`、`mainline_regression`。当前 Mac 自动验收路径使用 Unity 和已配置的测试服，按该范围核对现有产物。进度、截图和用例结果记录在网页，任务范围不包含 Jenkins 转换或部署、真机、在线回写和群播报。缺少技能引用或操作工具时，执行记录说明实际缺口，继续可独立验收的用例。
 
 要启用全自动 Unity 验收，在 Mac 的 `node.json` 配置 `"unity_test_roles": {"测试服数字ID": 角色数字ID}`，使用该节点已登录账号下允许验收的测试角色。Unity 工程需启用本机 Editor Debug MCP，默认检查 21891–21893。若端口不同，可用 `unity_debug_ports` 指定本机端口列表。
 

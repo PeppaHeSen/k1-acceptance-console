@@ -1,11 +1,13 @@
 from contextlib import nullcontext
 import json
 from pathlib import Path
+from subprocess import Popen
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
-from worker import Node, UnityTools, acceptance_checkout, command, save_json
+from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, FunctionReview, Node,
+                    UnityTools, acceptance_checkout, command, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
@@ -106,41 +108,79 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             (project / "ProjectSettings").mkdir(parents=True)
             (project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 2022.3.1f1")
             skill = base / "skill"
-            (skill / "review-k1-function").mkdir(parents=True)
-            (skill / "review-k1-function" / "SKILL.md").write_text("read this verified skill")
-            generator = skill / "slg-testcase-generator"
-            (generator / "references").mkdir(parents=True)
-            (generator / "SKILL.md").write_text("read this verified testcase skill")
-            (generator / "references" / "static_acceptance.md").write_text("read these K1 testcase rules")
+            skill.mkdir()
+            rules = {
+                path: f"verified {Path(path).parent.name}/{Path(path).name}"
+                for path in (*FUNCTION_REVIEW_RUNTIME, *FUNCTION_REVIEW_CASES)
+            }
+            for path, text in rules.items():
+                fixture = skill / path
+                fixture.parent.mkdir(parents=True, exist_ok=True)
+                fixture.write_text(text, encoding="utf-8")
+            for args in (("init", "-b", "main"), ("add", ".")):
+                command(["git", *args], cwd=skill)
+            command(["git", "-c", "user.name=Test", "-c", "user.email=fixture@example.test",
+                     "-c", "commit.gpgSign=false", "commit", "-m", "Skill snapshot"], cwd=skill)
+            revision = command(["git", "rev-parse", "HEAD"], cwd=skill).stdout.strip()
             run = base / "run"
             run.mkdir()
             node = Node.__new__(Node)
-            node.config = {"unity_editor": str(base / "2022.3.1f1" / "Unity")}
+            node.config = {"unity_editor": str(base / "2022.3.1f1" / "Unity"), "unity_test_roles": {"2903": 1}}
             node.attempt = {"id": "test-attempt"}
             node.cancel_attempt = None
             node.persist = Mock()
             node.watch_stop = lambda _: nullcontext()
             node.check_skill = lambda: skill
-            node.sync_skill = lambda _: (skill, "a" * 40, True)
+            node.sync_skill = Mock(return_value=(skill, revision, True))
             node.event = Mock()
-            node.run_claude = Mock(return_value={"summary": "已准备验收清单", "items": [
+            node.run_claude = Mock(side_effect=[{"summary": "已准备验收清单", "items": [
                 {"key": "NK-9705", "cases": [{"id": "TC-01", "title": "检查半身像"}]},
-            ]})
+            ]}, None])
+            node.close_unity = Mock()
             process = Mock(pid=314, returncode=0)
-            process.poll.return_value = 0
+            process.poll.side_effect = [None, None, 0]
             job = {"id": 8, "attempt": "test-attempt", "items": [{"key": "NK-9705", "title": "布阵页"}],
                    "config": {"mode": "branch", "refs": {"client": "dev_NK-9705"},
                               "source": "NK-9705", "server": "2903", "notes": ""}}
 
             def launch(*args, **kwargs):
+                if args[0][0] == "git":
+                    return Popen(*args, **kwargs)
                 self.assertTrue((run / "cases.json").is_file())
                 self.assertTrue(any(call.args == ("case_snapshot",) for call in node.event.call_args_list))
                 return process
 
-            with patch("worker.command", return_value=Mock(stdout="new portrait")), patch("worker.subprocess.Popen", launch):
-                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base), 0)
-            self.assertIn("read this verified skill", node.run_claude.call_args.args[0])
-            self.assertIn("read this verified testcase skill", node.run_claude.call_args.args[0])
-            self.assertIn("read these K1 testcase rules", node.run_claude.call_args.args[0])
+            def git(args, cwd=None, timeout=30):
+                if cwd == skill:
+                    return command(args, cwd=cwd, timeout=timeout)
+                return Mock(stdout="new portrait")
+
+            def unity(manifest):
+                bridge = Mock(manifest=manifest)
+                bridge.code.side_effect = ["playing", "logged_in"]
+                return bridge
+
+            # Local changes to the skill checkout must never drift into a batch.
+            (skill / FUNCTION_REVIEW_RUNTIME[1]).write_text("a different local workflow", encoding="utf-8")
+            with patch("worker.command", side_effect=git), patch("worker.UnityBridge", side_effect=unity), \
+                    patch("worker.subprocess.Popen", launch):
+                snapshot, runtime_rules = node.prepare_function_review()
+                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules), 0)
+            node.sync_skill.assert_called_once_with(skill)
+            planning, execution = (call.args[0] for call in node.run_claude.call_args_list)
+            for path in FUNCTION_REVIEW_RUNTIME:
+                self.assertIn(rules[path], planning)
+                self.assertIn(rules[path], execution)
+            for path in FUNCTION_REVIEW_CASES:
+                self.assertIn(rules[path], planning)
+            self.assertIn(revision, planning)
+            self.assertIn(revision, execution)
+            self.assertNotIn("a different local workflow", execution)
+            manifest = json.loads((run / "runtime.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["function_review"]["revision"], revision)
+            self.assertEqual(manifest["acceptance_scope"]["acceptanceMode"], "development")
+            with self.assertRaises(ValueError):
+                FunctionReview(manifest["function_review"]).read("review-k1-function/references/../../secret.md")
             snapshots = [call.kwargs["cases"] for call in node.event.call_args_list if call.args == ("case_snapshot",)]
-            self.assertEqual(snapshots, [[{"id": "TC-01", "title": "检查半身像", "state": "pending", "evidence": ""}]])
+            self.assertEqual(snapshots[0], [{"id": "TC-01", "title": "检查半身像", "state": "pending", "evidence": ""}])
+            self.assertEqual(snapshots[1][0]["state"], "blocked")
