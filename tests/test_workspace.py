@@ -161,6 +161,25 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertIn("PlayerID != 2", tools.guard)
             tools.bridge.play.assert_not_called()
 
+    def test_agent_can_use_existing_dev_login_when_the_regular_role_list_is_empty(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": temp, "test_roles": {"2903": [2]}})
+            tools = UnityTools(manifest)
+            tools.bridge = Mock()
+            roles = {"in_game": False, "current_server": 0, "current_player": 0, "login_error": False,
+                     "roles_ready": False, "players": [], "fast_login_panel": True, "screens": ["UILogin"]}
+            tools.bridge.code.side_effect = [roles, "selected", "confirmed", "logged_in"]
+            options = tools.handle("available_test_roles", {})
+            self.assertEqual((options["players"], options["fast_login_players"]), ([], [2]))
+            with self.assertRaisesRegex(ValueError, "已登记"):
+                tools.handle("select_test_role", {"player": 3, "fast_login": True})
+            with patch("worker.time.sleep"):
+                result = tools.handle("select_test_role", {"player": 2, "fast_login": True})
+            self.assertEqual(result, {"status": "logged_in", "server": 2903, "player": 2})
+            report = (manifest.parent / "environment.json").read_text(encoding="utf-8")
+            self.assertIn("身份已验证", report)
+
     def test_auto_result_blocks_unexecuted_cases(self):
         with TemporaryDirectory() as temp:
             run = Path(temp)

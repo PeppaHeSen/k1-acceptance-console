@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.7"
+WORKER_VERSION = "0.14.8"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -120,7 +120,11 @@ var dialog = scenes.FirstOrDefault(c => c.name.StartsWith("UISwitchRole"));
 if (dialog != null)
 {
     var selected = UI.UILogin._characterData;
-    if (selected == null || selected.playerid != __PLAYER__ || selected.serverid != __SERVER__)
+    if (selected == null || selected.serverid != __SERVER__ ||
+        (__FAST_LOGIN__ ? K1D2Config.I.FastLoginPlayerId != __PLAYER__ ||
+                          K1D2Config.I.FastLoginServerId != __SERVER__ ||
+                          !K1D2Config.I.IsFastLoginDev || K1D2Config.I.FastLoginForce
+                        : selected.playerid != __PLAYER__))
         return "wrong_confirmation";
     var target = dialog.GetComponentsInChildren<UnityEngine.Transform>(false)
         .FirstOrDefault(t => t.name == "RightBtn" && t.parent.name == "Content");
@@ -141,6 +145,10 @@ if (root == null)
     }
     return "loading";
 }
+if (__FAST_LOGIN__)
+{
+    __PREPARE_FAST_LOGIN__
+}
 var login = Logic.LoginMgrNew.I;
 if (login?.AuthDatasList == null || login.AuthDatasList.Count == 0) return "loading";
 var role = login.AuthDatasList.FirstOrDefault(x => x.playerid == __PLAYER__ && x.serverid == __SERVER__);
@@ -149,6 +157,57 @@ if (role.forbidden || login.CheckIsLimit(role.serverid) || !login.ContainServer(
     return "role_unavailable";
 UI.UILogin._characterData = role;
 DeepUI.PopupManager.I.ShowDialog<UI.UISwitchRole>();
+return "selected";
+'''
+
+PREPARE_FAST_LOGIN = r'''
+var nodes = root.GetComponentsInChildren<UnityEngine.Transform>(true);
+var fast = nodes.FirstOrDefault(t => t.name == "FastLogion" && t.gameObject.activeInHierarchy);
+if (fast == null) return "fast_login_unavailable";
+var entry = nodes.FirstOrDefault(t => t.name == "Account1" && t.gameObject.activeInHierarchy &&
+    t.parent.GetComponentsInChildren<UnityEngine.UI.Text>(false).Any(x => x.text.Trim() == "__SERVER__"));
+if (entry == null) return "loading";
+while (entry != null && entry != root.transform && !entry.GetComponents<UnityEngine.Component>()
+    .Any(c => c is UnityEngine.EventSystems.IPointerClickHandler)) entry = entry.parent;
+if (entry == null || entry == root.transform) return "fast_login_unavailable";
+var panel = fast.Find("FastLogionPanel");
+var open = fast.Find("BigBlueBtn1");
+if (panel == null || open == null) return "fast_login_unavailable";
+var close = panel.Find("CloseBtn");
+var roleInput = panel.Find("InputField1")?.GetComponent<UnityEngine.UI.InputField>();
+var serverInput = panel.Find("InputField2")?.GetComponent<UnityEngine.UI.InputField>();
+var gold = panel.Find("Toggle1")?.GetComponent<UnityEngine.UI.Toggle>();
+var beta = panel.Find("Toggle2")?.GetComponent<UnityEngine.UI.Toggle>();
+var dev = panel.Find("Toggle3")?.GetComponent<UnityEngine.UI.Toggle>();
+var force = panel.Find("Toggle4")?.GetComponent<UnityEngine.UI.Toggle>();
+if (close == null || roleInput == null || serverInput == null || gold == null || beta == null ||
+    dev == null || force == null) return "fast_login_unavailable";
+void Click(UnityEngine.Transform t) => UnityEngine.EventSystems.ExecuteEvents.Execute(t.gameObject,
+    new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current),
+    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+if (!panel.gameObject.activeInHierarchy) Click(open);
+if (!panel.gameObject.activeInHierarchy) return "fast_login_unavailable";
+var keys = new[] { "GM_FastLoginPlayerId", "GM_FastLoginServerId" };
+var had = keys.Select(key => UnityEngine.PlayerPrefs.HasKey(key)).ToArray();
+var prior = keys.Select(key => UnityEngine.PlayerPrefs.GetInt(key)).ToArray();
+try {
+    gold.isOn = false;
+    beta.isOn = false;
+    dev.isOn = true;
+    force.isOn = false;
+    roleInput.text = "__PLAYER__";
+    serverInput.text = "__SERVER__";
+    Click(close);
+} finally {
+    for (int i = 0; i < keys.Length; i++) {
+        if (had[i]) UnityEngine.PlayerPrefs.SetInt(keys[i], prior[i]);
+        else UnityEngine.PlayerPrefs.DeleteKey(keys[i]);
+    }
+}
+if (panel.gameObject.activeInHierarchy || !K1D2Config.I.IsFastLoginDev || K1D2Config.I.FastLoginForce ||
+    K1D2Config.I.FastLoginPlayerId != __PLAYER__ || K1D2Config.I.FastLoginServerId != __SERVER__)
+    return "fast_login_unavailable";
+Click(entry);
 return "selected";
 '''
 
@@ -162,6 +221,9 @@ return new {
     in_game = scenes.Any(c => c.name.StartsWith("UIMain")),
     login_error = scenes.Any(c => c.name.StartsWith("UILoginTipsDialog")),
     current_server = player.ServerId, current_player = player.PlayerID,
+    screens = scenes.Where(c => c.isRootCanvas).Select(c => c.name).Take(12).ToArray(),
+    fast_login_panel = scenes.Where(c => c.name.StartsWith("UILogin"))
+        .Any(c => c.transform.GetComponentsInChildren<UnityEngine.Transform>(false).Any(t => t.name == "FastLogion")),
     roles_ready = roles != null && roles.Count > 0,
     players = roles?.Where(role => role.serverid == __SERVER__ && !role.forbidden &&
         UI.LoginRoleListFilter.ShouldShowRole(role) && !login.CheckIsLimit(role.serverid) &&
@@ -171,8 +233,10 @@ return new {
 
 
 class RoleLogin:
-    def __init__(self, server, player):
-        self.code = LOGIN.replace("__SERVER__", str(int(server))).replace("__PLAYER__", str(int(player)))
+    def __init__(self, server, player, fast_login=False):
+        self.code = (LOGIN.replace("__PREPARE_FAST_LOGIN__", PREPARE_FAST_LOGIN)
+                     .replace("__SERVER__", str(int(server))).replace("__PLAYER__", str(int(player)))
+                     .replace("__FAST_LOGIN__", str(fast_login).lower()))
         self.picker_opened = False
         self.selected = False
         self.confirmed = False
@@ -249,12 +313,13 @@ TOOLS = {
                           {}, []),
     "environment_options": ("列出节点可用的测试服、角色和已授权的环境准备动作。按 FunctionReview 在验收中按需选择。",
                             {}, []),
-    "available_test_roles": ("查看批次目标服当前登录身份及账号可切换的角色。按 FunctionReview 为用例选择合适角色。",
+    "available_test_roles": ("查看目标服普通角色列表、当前界面、测试快速登录面板和节点已登记的测试角色。",
                              {}, []),
     "restart_test_play": ("首次登录界面长时间未就绪或提示登录错误时，允许重新进入 Play 一次并重新查角色。",
                           {}, []),
-    "select_test_role": ("选择目标服可用角色，或切换到节点额外配置的测试角色。省略参数时重登已选角色。返回 logged_in 后再验收。",
-                         {"server": {"type": "integer"}, "player": {"type": "integer"}}, []),
+    "select_test_role": ("选择目标服可用角色。普通列表为空时，对 fast_login_players 中的测试角色传 fast_login=true，走 Unity 测试快速登录面板。省略参数时重登当前角色。",
+                         {"server": {"type": "integer"}, "player": {"type": "integer"},
+                          "fast_login": {"type": "boolean"}}, []),
     "prepare_environment": ("调用节点已配置的环境动作。根据 FunctionReview 选择 environment_options 返回的动作，执行后回读业务前置。",
                             {"action": {"type": "string"}, "reason": {"type": "string"},
                              "parameters": {"type": "object"}}, ["action", "reason"]),
@@ -458,6 +523,7 @@ class UnityTools:
         self.artifact = None
         self.login_restarted = False
         self.role_login = None
+        self.fast_login = False
 
     @property
     def guard(self):
@@ -501,15 +567,19 @@ class UnityTools:
 
     def available_test_roles(self):
         server = int(self.manifest["server"])
+        fast_login_players = [player for player in self.roles.get(str(server), [])
+                              if type(player) is int and 0 < player < 2**31]
         state = self.bridge.code(LOGIN_ROLES.replace("__SERVER__", str(server)))
         if not isinstance(state, dict):
-            return {"server": server, "status": "loading", "players": []}
+            return {"server": server, "status": "loading", "players": [], "fast_login_players": fast_login_players}
         players = state.get("players") or []
         if state["in_game"] and state["current_server"] == server and state["current_player"] > 0:
             players = list(dict.fromkeys([state["current_player"], *players]))
         return {"server": server, "players": players,
                 "in_game": state["in_game"], "login_error": state["login_error"],
                 "roles_ready": state["roles_ready"],
+                "screens": state.get("screens", []), "fast_login_panel": state.get("fast_login_panel", False),
+                "fast_login_players": fast_login_players,
                 "current": {"server": state["current_server"], "player": state["current_player"]}}
 
     def select_test_role(self, args):
@@ -517,16 +587,24 @@ class UnityTools:
         if type(server) is not int or type(player) is not int or player <= 0:
             raise ValueError("请指定可用的测试服及角色 ID。")
         previous = self.server, self.player
-        if server == int(self.manifest["server"]) and (server, player) != previous:
+        fast_login = args.get("fast_login", False) is True or not args and self.fast_login
+        previous_fast_login = self.fast_login
+        if fast_login:
+            if (server != int(self.manifest["server"]) or not 0 < player < 2**31 or
+                    player not in self.roles.get(str(server), [])):
+                raise ValueError("测试快速登录需要使用目标服已登记的测试角色。")
+        elif server == int(self.manifest["server"]) and (server, player) != previous:
             if player not in self.available_test_roles()["players"]:
                 raise ValueError("当前登录会话的目标服可用角色列表中没有该角色。")
         elif (server, player) != previous and player not in self.roles.get(str(server), []):
             raise ValueError("该测试服和角色不在节点配置范围内。")
-        self.environment_event(f"准备环境 · 登录 {server} 服角色 {player}")
+        method = "Unity 测试快速登录" if fast_login else "登录"
+        self.environment_event(f"准备环境 · {method} {server} 服角色 {player}")
         if not args:
             self.restart_play()
         self.role_login = None
         self.server, self.player = server, player
+        self.fast_login = fast_login
         self.login_restarted = False
         try:
             deadline = time.monotonic() + 165
@@ -541,10 +619,11 @@ class UnityTools:
                 if status not in {"loading", "selected", "confirmed", "restarting_play"}:
                     raise RuntimeError(f"Unity 登录未完成 · {status}")
                 time.sleep(1)
-            raise RuntimeError("Unity 重登超时。")
+            raise RuntimeError("Unity 登录超时，请核对登录界面和目标服入口。")
         except (OSError, RuntimeError) as error:
             self.server, self.player = previous
             self.role_login = None
+            self.fast_login = previous_fast_login
             self.environment_event(f"登录未完成 · {error}")
             raise
 
@@ -644,7 +723,7 @@ class UnityTools:
             raise ValueError("请先选择目标服的测试角色。")
         self.invalidate_observation()
         if self.role_login is None:
-            self.role_login = RoleLogin(self.server, self.player)
+            self.role_login = RoleLogin(self.server, self.player, self.fast_login)
 
         def on_switch(current):
             self.environment_event(f"打开角色切换 · 当前 {current['server']} 服角色 {current['player']}")
@@ -1754,7 +1833,10 @@ class Node:
             "先用 available_test_roles 查看账号已加载的目标服可用角色与当前身份。"
             "当前身份符合目标服和用例前置时可沿用，否则选择合适的目标服角色。"
             "通过 select_test_role 填入所选角色，等待 logged_in 并 observe 核对实际身份后操作。"
-            "首次启动仍在加载时先等候并重查。若长时间无进展或出现登录错误，用 restart_test_play 重试一次。"
+            "普通角色列表为空时，查 fast_login_panel、screens 和 fast_login_players；"
+            "按 FunctionReview 的测试快速登录流程，对已登记的目标服测试角色调用 select_test_role，"
+            "并传 fast_login=true。两种方式都以实际服号和角色核对为准。"
+            "首次启动仍在加载时先等候并重查。登录界面长时间无进展或出现登录错误时，用 restart_test_play 重试并重新检查面板。"
             "目标服没有可用角色时按 FunctionReview 尝试本轮授权的环境路径，记录查询结果并继续其他可执行的用例。"
             f"运行规则来自规划阶段使用的同一 FunctionReview 提交 {review['revision']}。"
             "按提供的规则执行前置核对、用例操作、补验和证据判定。遇到相关引用和功能经验时用 read_function_review 读取。"
