@@ -489,12 +489,6 @@ function renderEvidence(cell, value, title, url) {
   const text = (value || "").replace(/\s*[·；]\s*item-\d+-[A-Za-z0-9_-]+\.png\s*$/, "").trim();
   if (!text && !url) return;
   cell.className = "evidence-cell";
-  if (text) {
-    const summary = document.createElement("p");
-    summary.className = "evidence-summary";
-    summary.textContent = text.replace(/截图由\s*pass\s*保存[。.]?/gi, "").trim();
-    cell.append(summary);
-  }
   const controls = document.createElement("div");
   controls.className = "evidence-controls";
   if (url) {
@@ -510,11 +504,18 @@ function renderEvidence(cell, value, title, url) {
     thumbnail.addEventListener("click",()=>showEvidence(title,"",url));
     controls.append(thumbnail);
   }
-  if (text.length > 38) {
+  if (text) {
     const more = document.createElement("button");
     more.type = "button";
     more.className = "evidence-more";
-    more.textContent = "查看全文";
+    more.setAttribute("aria-label",`查看 ${title} 的证据全文`);
+    const summary = document.createElement("span");
+    summary.className = "evidence-summary";
+    summary.textContent = text.replace(/截图由\s*pass\s*保存[。.]?/gi, "").trim() || text;
+    const action = document.createElement("span");
+    action.className = "evidence-action";
+    action.textContent = "全文";
+    more.append(summary,action);
     more.addEventListener("click",()=>showEvidence(title,text));
     controls.append(more);
   }
@@ -638,6 +639,7 @@ function renderRoute(navigating = false) {
   checklistSnapshot = "";
   expandedCaseGroups.clear();
   byId("items").replaceChildren();
+  setLogExpanded(false);
   stream?.close();
   logs.clear();
   byId("logEntries").replaceChildren();
@@ -691,6 +693,7 @@ for (const [button,dialog] of [["online","nodeDialog"],["newJob","jobDialog"],["
 }
 document.querySelectorAll("[data-close-dialog]").forEach(element=>element.addEventListener("click",()=>element.closest("dialog").close()));
 document.querySelectorAll("[data-detail-jump]").forEach(button=>button.addEventListener("click",()=>{
+  if (button.dataset.detailJump === "logsPanel") setLogExpanded(true);
   byId(button.dataset.detailJump).scrollIntoView({block:"start"});
 }));
 byId("evidenceFullImage").addEventListener("error",()=>{
@@ -768,13 +771,14 @@ byId("summaryToggle").addEventListener("click",event=>{
 });
 byId("followLog").addEventListener("change",followLatest);
 new ResizeObserver(followLatest).observe(byId("logEntries"));
-byId("logToggle").addEventListener("click",event=>{
-  const entries = byId("logEntries");
-  const expanded = entries.hidden;
-  event.currentTarget.setAttribute("aria-expanded",String(expanded));
+function setLogExpanded(expanded) {
+  byId("logToggle").setAttribute("aria-expanded",String(expanded));
   byId("logsPanel").classList.toggle("collapsed",!expanded);
-  entries.hidden = !expanded;
+  byId("logEntries").hidden = byId("logFollowControl").hidden = !expanded;
   if (expanded) followLatest();
+}
+byId("logToggle").addEventListener("click",()=>{
+  setLogExpanded(byId("logEntries").hidden);
 });
 for (const name of ["animationend","animationcancel"]) {
   byId("logEntries").addEventListener(name,event=>{

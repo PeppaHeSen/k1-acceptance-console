@@ -7,10 +7,30 @@ import unittest
 from unittest.mock import Mock, patch
 
 from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, FunctionReview, Node,
-                    UnityTools, acceptance_checkout, command, save_json)
+                    UnityTools, acceptance_checkout, command, resolve_repository, save_json)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_project_checks_accept_flat_and_nested_repositories(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            paths = {"client": root / "k1_client", "game": root / "K1Game" / "game",
+                     "data": root / "dataconfig"}
+            for path in paths.values():
+                path.mkdir(parents=True)
+                command(["git", "init", "-q"], cwd=path)
+            node = Node.__new__(Node)
+            node.config = {"methods": []}
+            node.check_skill = Mock(return_value=root)
+            node.claude = None
+            node.setup(str(root))
+            checks = {check["label"]: check for check in node.checks}
+            for role, path in paths.items():
+                self.assertEqual(checks[role], {"label": role, "ok": True, "detail": str(path.resolve())})
+            (paths["client"] / "client").mkdir()
+            with self.assertRaisesRegex(ValueError, "Git 工作树"):
+                resolve_repository(paths["client"], "K1Client/client")
+
     def test_language_restart_retries_play_once_after_login_error(self):
         with TemporaryDirectory() as temp:
             manifest = Path(temp) / "runtime.json"

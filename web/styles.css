@@ -158,23 +158,26 @@
   .view-detail main { display: flex; flex-direction: column; }
   #detail { display: flex; flex: 1; flex-direction: column; min-width: 0; }
   #detail > :not(.list, .log) { flex-shrink: 0; }
+  #detail .page-intro { margin-bottom: 12px; }
   #state { padding: 0; background: transparent; }
-  .run { padding: 14px 18px; }
+  .run { padding: 11px 18px; }
   .run .field { margin-top: 7px; }
   .run #progressCount { margin: 0; }
   .list {
-    display: flex; flex-direction: column; min-height: 106px;
-    max-height: clamp(164px, 33dvh, 400px); margin-top: 14px; overflow: hidden;
+    display: flex; flex-direction: column; min-height: 180px;
+    margin-top: 12px; overflow: hidden;
   }
-  .list-head { flex: none; padding: 12px 18px; }
+  .list-head { flex: none; padding: 9px 18px; }
   .table-wrap { min-height: 0; overflow: auto; scroll-padding-top: 36px; }
   .table-wrap:focus-visible { outline-offset: -3px; }
   .checklist-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; font-size: 13px; }
-  .checklist-result { width: 14%; }
-  .checklist-evidence { width: 26%; }
+  .checklist-result { width: 100px; }
+  .checklist-evidence { width: 30%; }
   th, td { padding: 8px 14px 8px 18px; border-top: 1px solid var(--line); vertical-align: top; }
   th { background: var(--control); color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }
   .checklist-table th { position: sticky; top: 0; z-index: 1; background: color-mix(in srgb, var(--card) 94%, var(--accent)); }
+  .checklist-table :is(th, td) { padding-block: 6px; }
+  .checklist-table td { vertical-align: middle; }
   td:nth-child(2) { white-space: nowrap; }
   td { overflow-wrap: anywhere; }
   td:nth-child(3) { color: var(--muted); }
@@ -187,32 +190,36 @@
     border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
   .case-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
   .case-row { background: color-mix(in srgb, var(--control) 40%, transparent); }
-  .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 3px 0 0 14px; }
+  .case-title { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding-left: 10px; }
   .case-id { color: var(--muted); white-space: nowrap; font-size: 12px; }
   .detail-jump { display: none; }
   .evidence-summary {
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
-    overflow: hidden; color: var(--muted); font-weight: 400; line-height: 1.55;
+    min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    color: var(--muted); font-weight: 400;
   }
-  .evidence-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 6px; }
+  .evidence-controls { display: flex; align-items: center; gap: 8px; }
   .evidence-thumbnail {
-    display: grid; place-items: center; padding: 0; width: 78px; height: 46px;
-    overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--control);
+    display: grid; place-items: center; flex: none; padding: 0; width: 46px; height: 28px;
+    overflow: hidden; border: 1px solid var(--border); border-radius: 5px; background: var(--control);
   }
   .evidence-thumbnail:hover { border-color: var(--accent); }
   .evidence-thumbnail img { width: 100%; height: 100%; object-fit: cover; }
-  .evidence-more { background: transparent; padding: 2px 0; border: 0; color: var(--accent); font-size: 12px; }
-  .evidence-more:hover { text-decoration: underline; }
+  .evidence-more {
+    display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 8px;
+    min-width: 0; min-height: 28px; padding: 0; border: 0; background: transparent; text-align: left; font-size: 12px;
+  }
+  .evidence-action { flex: none; color: var(--accent); }
+  .evidence-more:hover .evidence-action { text-decoration: underline; }
   #evidenceDialog { width: min(980px, calc(100vw - 28px)); }
   .evidence-view { padding: 12px 16px; }
   .evidence-view p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
   .evidence-view img { display: block; max-width: 100%; max-height: calc(100dvh - 118px); margin: auto; object-fit: contain; }
   .log {
-    --surface: var(--console); display: flex; flex: 1 0 244px; flex-direction: column;
-    overflow: hidden; margin-top: 14px; color: var(--console-ink);
+    --surface: var(--console); display: flex; flex: none; flex-direction: column;
+    overflow: hidden; margin-top: 12px; color: var(--console-ink);
   }
-  .log.collapsed { flex: none; }
-  .log-header { flex: none; padding: 10px 16px; min-height: 48px; background: var(--console-head); }
+  .log:not(.collapsed) { height: clamp(180px, 27dvh, 340px); }
+  .log-header { flex: none; padding: 8px 16px; min-height: 42px; background: var(--console-head); }
   #logToggle { display: inline-flex; align-items: center; gap: 8px; padding: 2px; background: none; border: 0; color: inherit; font-weight: 700; }
   #logToggle span { display: inline-block; font-size: 20px; line-height: .8; }
   #logToggle[aria-expanded="true"] span { transform: rotate(90deg); }
@@ -301,7 +308,12 @@
   #retentionEffect:empty, #retentionError:empty { margin: 0; }
   .settings-actions { display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); }
 
-  @media (min-width: 701px) and (min-height: 740px) {
+  @media (min-width: 901px) {
+    .view-detail :is(.top, main) { width: min(1280px, calc(100% - 48px)); }
+    .detail-heading { display: flex; align-items: center; gap: 16px; }
+    #detail .detail-heading .back { align-self: auto; margin-bottom: 0; }
+  }
+  @media (min-width: 901px) and (min-height: 821px) {
     .view-detail { height: 100dvh; }
     .view-detail main, #detail { min-height: 0; }
     .table-wrap, #logEntries { overscroll-behavior-y: contain; }
@@ -319,13 +331,13 @@
     .detail-jump { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .detail-jump .secondary { min-height: 32px; font-size: 12px; }
     #checklist, #logsPanel { scroll-margin-top: 92px; }
-    #checklist { max-height: none; min-height: 0; }
+    #checklist { min-height: 0; }
     #checklist .table-wrap { overflow: visible; }
     .checklist-table, .checklist-table tbody { display: block; }
     .checklist-table thead, .checklist-table colgroup { display: none; }
     .checklist-table tr {
       display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px;
-      padding: 10px 14px; border-top: 1px solid var(--line);
+      padding: 8px 14px; border-top: 1px solid var(--line);
     }
     .checklist-table td { min-width: 0; padding: 0; border: 0; }
     .checklist-table td:nth-child(3) { grid-column: 1 / -1; }

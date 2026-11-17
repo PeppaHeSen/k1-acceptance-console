@@ -175,9 +175,11 @@
       </div>
     </section>
     <section id="detail" class="detail-view" hidden>
-      <a class="back primary" href="#dashboard"><span aria-hidden="true">‹</span> 返回运行队列</a>
       <div class="page-intro">
-        <div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div>
+        <div class="detail-heading">
+          <a class="back primary" href="#dashboard"><span aria-hidden="true">‹</span> 返回运行队列</a>
+          <div><h1 id="detailTitle">验收批次</h1><p id="context" class="sub"></p></div>
+        </div>
         <div class="detail-actions">
           <span id="state" class="pill"></span>
           <button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button>
@@ -208,12 +210,12 @@
           </table>
         </div>
       </section>
-      <section class="card log" id="logsPanel" aria-labelledby="logToggle">
+      <section class="card log collapsed" id="logsPanel" aria-labelledby="logToggle">
         <div class="log-header">
-          <h2><button type="button" id="logToggle" aria-expanded="true" aria-controls="logEntries"><span aria-hidden="true">›</span> AI 输出与执行记录</button></h2>
-          <label class="log-follow"><input id="followLog" type="checkbox" checked>跟随最新</label>
+          <h2><button type="button" id="logToggle" aria-expanded="false" aria-controls="logEntries"><span aria-hidden="true">›</span> AI 输出与执行记录</button></h2>
+          <label class="log-follow" id="logFollowControl" hidden><input id="followLog" type="checkbox" checked>跟随最新</label>
         </div>
-        <div id="logEntries" role="log" aria-label="带时间的执行记录" tabindex="0"></div>
+        <div id="logEntries" role="log" aria-label="带时间的执行记录" tabindex="0" hidden></div>
       </section>
     </section>
     <dialog id="evidenceDialog" aria-labelledby="evidenceHeading">

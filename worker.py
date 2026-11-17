@@ -28,7 +28,7 @@ REPOS = {"client": "K1Client/k1_client", "game": "K1Game/game",
          "data": "K1Dataconfig/dataconfig"}
 API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
-WORKER_VERSION = "0.14.0"
+WORKER_VERSION = "0.14.1"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -606,6 +606,25 @@ def command(args, cwd=None, timeout=30):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True)
 
 
+def resolve_repository(root, relative):
+    relative = Path(relative)
+    candidates = Path(root) / relative, Path(root) / relative.name
+    inaccessible = []
+    for target in candidates:
+        if not target.is_dir():
+            continue
+        try:
+            actual = command(["git", "-C", str(target), "rev-parse", "--show-toplevel"], timeout=10)
+            if actual.stdout.strip() and Path(actual.stdout.strip()).resolve() == target.resolve():
+                return target.resolve()
+        except subprocess.CalledProcessError as error:
+            if "dubious ownership" in (error.stderr or "").lower():
+                inaccessible.append(str(target))
+    if inaccessible:
+        raise ValueError("当前执行账号未获 Git 信任：" + "、".join(inaccessible))
+    raise ValueError("未找到独立的 Git 工作树：" + " 或 ".join(map(str, candidates)))
+
+
 def save_json(path, data, *, overwrite=True):
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
         temporary = Path(file.name)
@@ -766,17 +785,17 @@ class Node:
 
         if not root:
             return
-        project = Path(root)
-
-        def repository(relative):
-            target = project / relative
-            actual = Path(command(["git", "-C", str(target), "rev-parse", "--show-toplevel"]).stdout.strip())
-            if actual.resolve() != target.resolve():
-                raise ValueError()
-            return target.resolve()
-
-        paths = [check(label, lambda relative=relative: repository(relative),
-                       "检查目录及其 Git 工作树。") for label, relative in REPOS.items()]
+        paths = []
+        for label, relative in REPOS.items():
+            try:
+                path = resolve_repository(root, relative)
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                detail = str(error) if isinstance(error, ValueError) else "无法执行 Git 检查，请核对节点执行账号的 Git 和目录权限。"
+                self.checks.append({"label": label, "ok": False, "detail": detail})
+                paths.append(None)
+            else:
+                self.checks.append({"label": label, "ok": True, "detail": str(path)})
+                paths.append(path)
         skill = check("K1FunctionReview", self.check_skill, "检查团队仓库、Git 权限和安装目录。")
 
         def claude_login():
@@ -920,7 +939,7 @@ class Node:
     def versions(root, config):
         def resolve(pair):
             role, relative = pair
-            repo = Path(root) / relative
+            repo = resolve_repository(root, relative)
             ref = config["refs"][role]
             local = command(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
             try:
@@ -1141,7 +1160,7 @@ class Node:
             raise RuntimeError("请填写有效的测试服 ID。")
         ref = config["refs"]["client"]
         snapshot, runtime_rules = self.prepare_function_review()
-        repo = (root / REPOS["client"]).resolve()
+        repo = resolve_repository(root, REPOS["client"])
         run = self.state.resolve() / "runtime" / job["attempt"]
         run.mkdir(parents=True, mode=0o700)
         self.event("stage_changed", text=f"正在准备客户端分支 {ref}"[:200])
