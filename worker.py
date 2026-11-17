@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.5"
+WORKER_VERSION = "0.14.6"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -109,42 +109,89 @@ if (!UnityEditor.EditorApplication.isPlaying) return "loading";
 var player = Logic.LPlayer.I;
 var scenes = UnityEngine.Object.FindObjectsOfType<UnityEngine.Canvas>(false);
 if (scenes.Any(c => c.name.StartsWith("UILoginTipsDialog"))) return "login_error";
+bool inGame = scenes.Any(c => c.name.StartsWith("UIMain"));
 if (player.PlayerID == __PLAYER__ && player.ServerId == __SERVER__)
 {
     if (Game.Data.GameData.I?.BindData?.switchLangeuageing == true) return "loading";
-    return scenes.Any(c => c.name.StartsWith("UIMain")) ? "logged_in" : "loading";
+    return inGame ? "logged_in" : "loading";
 }
-if (player.PlayerID != 0) return "wrong_role";
-var root = scenes.FirstOrDefault(c => c.name.StartsWith("UILogin"));
-if (root == null) return "loading";
+if (__CONFIRMED__) return "loading";
 var dialog = scenes.FirstOrDefault(c => c.name.StartsWith("UISwitchRole"));
-UnityEngine.Transform target;
-if (dialog == null)
+if (dialog != null)
 {
-    var rows = root.GetComponentsInChildren<UnityEngine.Transform>(false).Where(t => t.name == "Account1").ToArray();
-    if (rows.Length == 0) return "loading";
-    target = rows.FirstOrDefault(t =>
-        t.parent.GetComponentsInChildren<UnityEngine.UI.Text>(false).Any(x => x.text.Trim() == "__SERVER__") &&
-        t.GetComponentsInChildren<UnityEngine.UI.Text>(false).Any(x => x.text.Trim() == "Player__PLAYER__"));
-    while (target != null && !target.GetComponents<UnityEngine.Component>()
-        .Any(c => c is UnityEngine.EventSystems.IPointerClickHandler)) target = target.parent;
-    if (target == null) return "role_missing";
-}
-else
-{
-    if (!dialog.GetComponentsInChildren<UnityEngine.UI.Text>(false)
-        .Any(x => System.Text.RegularExpressions.Regex.IsMatch(x.text, @"(?<!\d)__PLAYER__(?!\d)")))
+    var selected = UI.UILogin._characterData;
+    if (selected == null || selected.playerid != __PLAYER__ || selected.serverid != __SERVER__)
         return "wrong_confirmation";
-    target = dialog.GetComponentsInChildren<UnityEngine.Transform>(false)
+    var target = dialog.GetComponentsInChildren<UnityEngine.Transform>(false)
         .FirstOrDefault(t => t.name == "RightBtn" && t.parent.name == "Content");
     if (target == null) return "loading";
+    UnityEngine.EventSystems.ExecuteEvents.Execute(target.gameObject,
+        new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current),
+        UnityEngine.EventSystems.pointerClickHandler);
+    return "confirmed";
 }
-UnityEngine.EventSystems.ExecuteEvents.Execute(target.gameObject,
-    new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current),
-    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
-return dialog == null ? "selected" : "confirmed";
+if (__SELECTED__) return "loading";
+var root = scenes.FirstOrDefault(c => c.name.StartsWith("UILogin"));
+if (root == null)
+{
+    if (!__PICKER_OPENED__ && inGame && player.PlayerID > 0 && player.ServerId > 0)
+    {
+        DeepUI.PopupManager.I.ShowPanel<UI.UILogin>();
+        return new { status = "role_picker_opened", server = player.ServerId, player = player.PlayerID };
+    }
+    return "loading";
+}
+var login = Logic.LoginMgrNew.I;
+if (login?.AuthDatasList == null || login.AuthDatasList.Count == 0) return "loading";
+var role = login.AuthDatasList.FirstOrDefault(x => x.playerid == __PLAYER__ && x.serverid == __SERVER__);
+if (role == null || !UI.LoginRoleListFilter.ShouldShowRole(role)) return "role_missing";
+if (role.forbidden || login.CheckIsLimit(role.serverid) || !login.ContainServer(role.serverid))
+    return "role_unavailable";
+UI.UILogin._characterData = role;
+DeepUI.PopupManager.I.ShowDialog<UI.UISwitchRole>();
+return "selected";
 '''
 
+LOGIN_ROLES = r'''
+if (!UnityEditor.EditorApplication.isPlaying) return null;
+var player = Logic.LPlayer.I;
+var scenes = UnityEngine.Object.FindObjectsOfType<UnityEngine.Canvas>(false);
+var login = Logic.LoginMgrNew.I;
+var roles = login?.AuthDatasList;
+return new {
+    in_game = scenes.Any(c => c.name.StartsWith("UIMain")),
+    login_error = scenes.Any(c => c.name.StartsWith("UILoginTipsDialog")),
+    current_server = player.ServerId, current_player = player.PlayerID,
+    roles_ready = roles != null && roles.Count > 0,
+    players = roles?.Where(role => role.serverid == __SERVER__ && !role.forbidden &&
+        UI.LoginRoleListFilter.ShouldShowRole(role) && !login.CheckIsLimit(role.serverid) &&
+        login.ContainServer(role.serverid)).Select(role => role.playerid).Distinct().ToArray()
+};
+'''
+
+
+class RoleLogin:
+    def __init__(self, server, player):
+        self.code = LOGIN.replace("__SERVER__", str(int(server))).replace("__PLAYER__", str(int(player)))
+        self.picker_opened = False
+        self.selected = False
+        self.confirmed = False
+
+    def poll(self, bridge, on_switch=None):
+        code = (self.code.replace("__PICKER_OPENED__", str(self.picker_opened).lower())
+                .replace("__SELECTED__", str(self.selected).lower())
+                .replace("__CONFIRMED__", str(self.confirmed).lower()))
+        result = bridge.code(code)
+        if isinstance(result, dict) and result.get("status") == "role_picker_opened":
+            self.picker_opened = True
+            if on_switch:
+                on_switch(result)
+            return "loading"
+        if result == "selected":
+            self.selected = True
+        elif result == "confirmed":
+            self.confirmed = True
+        return result
 
 class UnityBridge:
     def __init__(self, manifest):
@@ -202,7 +249,11 @@ TOOLS = {
                           {}, []),
     "environment_options": ("列出节点可用的测试服、角色和已授权的环境准备动作。按 FunctionReview 在验收中按需选择。",
                             {}, []),
-    "select_test_role": ("重新进入 Play 并登录节点中已有的测试角色。省略参数时重登当前角色。返回 logged_in 后再 observe 确认前置。",
+    "available_test_roles": ("查看批次目标服当前登录身份及账号可切换的角色。按 FunctionReview 为用例选择合适角色。",
+                             {}, []),
+    "restart_test_play": ("首次登录界面长时间未就绪或提示登录错误时，允许重新进入 Play 一次并重新查角色。",
+                          {}, []),
+    "select_test_role": ("选择目标服可用角色，或切换到节点额外配置的测试角色。省略参数时重登已选角色。返回 logged_in 后再验收。",
                          {"server": {"type": "integer"}, "player": {"type": "integer"}}, []),
     "prepare_environment": ("调用节点已配置的环境动作。根据 FunctionReview 选择 environment_options 返回的动作，执行后回读业务前置。",
                             {"action": {"type": "string"}, "reason": {"type": "string"},
@@ -406,9 +457,12 @@ class UnityTools:
         self.active = None
         self.artifact = None
         self.login_restarted = False
+        self.role_login = None
 
     @property
     def guard(self):
+        if self.player is None:
+            raise ValueError("请先从目标服可用角色中选择并登录。")
         return UI_GUARD.replace("__PLAYER__", str(self.player)).replace("__SERVER__", str(self.server))
 
     def invalidate_observation(self):
@@ -425,12 +479,12 @@ class UnityTools:
     def environment_event(self, text):
         path = self.run / "environment.json"
         entries = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-        item, case = self.active
-        entries.append(f"{item} · {case} · {text}")
+        entries.append(" · ".join([*(self.active or ("验收登录",)), text]))
         save_json(path, entries)
 
     def restart_play(self):
         self.invalidate_observation()
+        self.role_login = None
         self.bridge.play(False)
         for _ in range(20):
             try:
@@ -445,13 +499,33 @@ class UnityTools:
             time.sleep(.5)
         raise RuntimeError("Unity 未退出 Play，无法重登。")
 
+    def available_test_roles(self):
+        server = int(self.manifest["server"])
+        state = self.bridge.code(LOGIN_ROLES.replace("__SERVER__", str(server)))
+        if not isinstance(state, dict):
+            return {"server": server, "status": "loading", "players": []}
+        players = state.get("players") or []
+        if state["in_game"] and state["current_server"] == server and state["current_player"] > 0:
+            players = list(dict.fromkeys([state["current_player"], *players]))
+        return {"server": server, "players": players,
+                "in_game": state["in_game"], "login_error": state["login_error"],
+                "roles_ready": state["roles_ready"],
+                "current": {"server": state["current_server"], "player": state["current_player"]}}
+
     def select_test_role(self, args):
         server, player = args.get("server", self.server), args.get("player", self.player)
-        if type(server) is not int or type(player) is not int or player not in self.roles.get(str(server), []):
-            raise ValueError("该测试服和角色不在节点配置范围内。")
+        if type(server) is not int or type(player) is not int or player <= 0:
+            raise ValueError("请指定可用的测试服及角色 ID。")
         previous = self.server, self.player
+        if server == int(self.manifest["server"]) and (server, player) != previous:
+            if player not in self.available_test_roles()["players"]:
+                raise ValueError("当前登录会话的目标服可用角色列表中没有该角色。")
+        elif (server, player) != previous and player not in self.roles.get(str(server), []):
+            raise ValueError("该测试服和角色不在节点配置范围内。")
         self.environment_event(f"准备环境 · 登录 {server} 服角色 {player}")
-        self.restart_play()
+        if not args:
+            self.restart_play()
+        self.role_login = None
         self.server, self.player = server, player
         self.login_restarted = False
         try:
@@ -470,9 +544,8 @@ class UnityTools:
             raise RuntimeError("Unity 重登超时。")
         except (OSError, RuntimeError) as error:
             self.server, self.player = previous
+            self.role_login = None
             self.environment_event(f"登录未完成 · {error}")
-            if previous != (server, player):
-                self.restart_play()
             raise
 
     def prepare_environment(self, name, reason, parameters):
@@ -567,17 +640,26 @@ class UnityTools:
         original.unlink()
 
     def resume_test_login(self):
+        if self.player is None:
+            raise ValueError("请先选择目标服的测试角色。")
         self.invalidate_observation()
-        login = LOGIN.replace("__PLAYER__", str(self.player)).replace("__SERVER__", str(self.server))
+        if self.role_login is None:
+            self.role_login = RoleLogin(self.server, self.player)
+
+        def on_switch(current):
+            self.environment_event(f"打开角色切换 · 当前 {current['server']} 服角色 {current['player']}")
+
         for _ in range(8):
-            status = self.bridge.code(login)
+            status = self.role_login.poll(self.bridge, on_switch)
             if status not in {"loading", "selected", "confirmed"}:
                 break
             time.sleep(2)
         if status == "logged_in":
             self.login_restarted = False
+            self.role_login = None
         elif status == "login_error" and not self.login_restarted:
             self.login_restarted = True
+            self.role_login = None
             self.bridge.play(False)
             for _ in range(8):
                 if self.bridge.code("return !UnityEditor.EditorApplication.isPlaying;") is True:
@@ -590,6 +672,17 @@ class UnityTools:
     def handle(self, name, args):
         if name == "environment_options":
             return self.environment_options()
+        if name == "available_test_roles":
+            return self.available_test_roles()
+        if name == "select_test_role":
+            return self.select_test_role(args)
+        if name == "restart_test_play":
+            if self.player is not None or self.login_restarted:
+                raise ValueError("首次登录阶段只允许重试一次 Play。")
+            self.login_restarted = True
+            self.environment_event("登录界面未就绪，重新进入 Play")
+            self.restart_play()
+            return {"status": "restarting_play"}
         if name == "observe":
             canvas = str(args.get("canvas", ""))[:100]
             widget = str(args.get("widget", ""))[:100]
@@ -610,10 +703,8 @@ class UnityTools:
             self.invalidate_observation()
             return self.bridge.code(self.guard + CLICK_UI.replace("__ID__", str(control)))
         if name in {"set_game_view", "capture_view", "resume_test_login", "scroll_list",
-                    "select_test_role", "prepare_environment"} and not self.active:
+                    "prepare_environment"} and not self.active:
             raise ValueError("请先开始当前用例。")
-        if name == "select_test_role":
-            return self.select_test_role(args)
         if name == "prepare_environment":
             return self.prepare_environment(args["action"], args["reason"], args.get("parameters", {}))
         if name == "scroll_list":
@@ -677,7 +768,8 @@ class UnityTools:
                 raise ValueError("请填写实际观察或阻塞原因。")
             if state == "defer":
                 state = "pending"
-            if self.server != int(self.manifest["server"]) or self.player != self.manifest.get("test_player"):
+            if self.player is not None and (self.server != int(self.manifest["server"])
+                                            or self.player != self.manifest.get("test_player")):
                 observation = f"{self.server} 服角色 {self.player} · {observation}"
             if state in {"pass", "fail"}:
                 if not self.observed:
@@ -845,6 +937,11 @@ def test_roles(config):
         if allowed:
             roles[server] = allowed
     return roles
+
+
+def test_servers(config):
+    return sorted({*test_roles(config), *(str(server) for server in config.get("unity_test_servers", [])
+                                        if re.fullmatch(r"[1-9][0-9]{0,9}", str(server)))})
 
 
 def has_windows_desktop():
@@ -1068,11 +1165,11 @@ class Node:
                 if editor and editor.is_file() and (editor_project / "ProjectSettings").is_dir():
                     self.checks.append({"label": "Unity", "ok": True, "detail": str(editor_project)})
                     self.caps.append("Unity")
-                    servers = list(test_roles(self.config))
+                    servers = test_servers(self.config)
                     if not self.config.get("unity_runtime"):
                         detail = "节点尚未启用运行验收。"
                     elif not servers:
-                        detail = "节点尚未配置测试服和测试角色。"
+                        detail = "节点尚未配置可验收的测试服。"
                     elif self.os_name == "Windows" and not has_windows_desktop():
                         detail = "请在已登录的 Windows 桌面会话中启动 Worker。"
                     else:
@@ -1374,7 +1471,7 @@ class Node:
             self.check_stopped()
             config = job["config"]
             if config["method"] == "Unity" and config["server"]:
-                if UNITY_RUNTIME_CAPABILITY not in self.caps or config["server"] not in test_roles(self.config):
+                if UNITY_RUNTIME_CAPABILITY not in self.caps or config["server"] not in test_servers(self.config):
                     raise RuntimeError("该节点没有为指定测试服启用 Unity 自动实测。")
                 self.execute_unity(job, Path(root))
                 return
@@ -1501,7 +1598,7 @@ class Node:
                     "server": config["server"], "client": sha, "project": str(project),
                     "reference_branches": config["refs"], "notes": config["notes"], "items":job["items"],
                     "cases_file": str(run / "cases.json")}
-        auto = "unity_test_roles" in self.config
+        auto = config["server"] in test_servers(self.config)
         if auto:
             roles = test_roles(self.config)
             actions = {}
@@ -1526,12 +1623,11 @@ class Node:
                                  "description": description[:200], "timeout": seconds, "parameters": parameters}
             manifest["test_roles"] = roles
             manifest["environment_actions"] = actions
-            manifest["test_player"] = next(iter(roles.get(str(config["server"]), [])), None)
             manifest["ports"] = self.config.get("unity_debug_ports", [21891, 21892, 21893])
         manifest["acceptance_scope"] = {
             "acceptanceMode": {"branch": "development", "version": "mainline_regression"}[config["mode"]],
             "path": "Unity", "project": str(project), "client": sha, "referenceBranches": config["refs"],
-            "server": config["server"], "testPlayer": manifest.get("test_player"),
+            "server": config["server"],
             "environmentPreparation": "runtime", "writeback": False,
         }
         if snapshot:
@@ -1579,10 +1675,6 @@ class Node:
 
         self.check_stopped()
         upload_cases()
-        if auto and not manifest["test_player"]:
-            self.finish_auto_cases(manifest, run, "节点没有为指定测试服配置已授权角色。", plan_errors)
-            upload_cases()
-            return 0
         if auto and not case_file.is_file():
             self.finish_auto_cases(manifest, run, "FunctionReview 未生成可执行用例。", plan_errors)
             return 0
@@ -1649,36 +1741,21 @@ class Node:
                          "Unity 导入或调试连接超时。")
         if ready == "dirty":
             raise RuntimeError("Unity 场景有未保存改动，无法启动自动验收。")
-        login = LOGIN.replace("__PLAYER__", str(manifest["test_player"])).replace("__SERVER__", str(int(manifest["server"])))
-        login_states = {"logged_in", "wrong_role", "role_missing", "wrong_confirmation", "login_error"}
-        self.event("stage_changed", text=f"正在自动进入 Play 并登录 {manifest['server']} 服")
+        self.event("stage_changed", text=f"Unity 已就绪 · 目标 {manifest['server']} 服 · 交给验收 AI 选择角色")
         if ready == "ready":
             bridge.play(True)
-        try:
-            status = wait_for(lambda: bridge.code(login), login_states, 150, "Unity 登录界面加载超时。")
-        except RuntimeError as error:
-            if not str(error).endswith("界面加载超时。"):
-                raise
-            self.event("stage_changed", text="登录界面未加载，自动重新进入 Play")
-            bridge.play(False)
-            state = wait_for(lambda: bridge.code(PLAY_SCENE), {"ready", "dirty"}, 90, "Unity 未退出 Play。")
-            if state != "ready":
-                raise RuntimeError("Unity 场景有未保存改动，无法重试 Play。")
-            bridge.play(True)
-            status = wait_for(lambda: bridge.code(login), login_states, 150, "重试后 Unity 登录界面仍未加载。")
-        if status != "logged_in":
-            raise RuntimeError({"wrong_role": "已登录角色与本批次配置不符。",
-                                "role_missing": "Unity 登录页没有配置的测试角色。",
-                                "wrong_confirmation": "登录确认弹窗的角色与本批次配置不符。",
-                                "login_error": "Unity 登录界面返回错误。"}[status])
         review = manifest["function_review"]
-        self.event("stage_changed", text=f"已验证 {manifest['server']} 服角色 · 按 FunctionReview {review['revision'][:12]} 执行")
         case_file = run / "cases.json"
         if not case_file.is_file():
             raise RuntimeError("FunctionReview 未生成可执行用例。")
         cases = json.loads(case_file.read_text(encoding="utf-8"))
         prompt = (
-            "你在独占的 Unity 测试工程中，Worker 已进入 Play 并验证测试角色。"
+            "你在独占的 Unity 测试工程中。Worker 已请求进入 Play，验收角色由你根据目标服和用例决定。"
+            "先用 available_test_roles 查看账号已加载的目标服可用角色与当前身份。"
+            "当前身份符合目标服和用例前置时可沿用，否则选择合适的目标服角色。"
+            "通过 select_test_role 填入所选角色，等待 logged_in 并 observe 核对实际身份后操作。"
+            "首次启动仍在加载时先等候并重查。若长时间无进展或出现登录错误，用 restart_test_play 重试一次。"
+            "目标服没有可用角色时按 FunctionReview 尝试本轮授权的环境路径，记录查询结果并继续其他可执行的用例。"
             f"运行规则来自规划阶段使用的同一 FunctionReview 提交 {review['revision']}。"
             "按提供的规则执行前置核对、用例操作、补验和证据判定。遇到相关引用和功能经验时用 read_function_review 读取。"
             "本轮范围由下方 acceptance_scope 给定。Worker 已准备客户端和现有测试服连接，"
@@ -1694,7 +1771,7 @@ class Node:
             "prepare_environment 返回 pending 时可用 case_progress 的 defer 暂放当前用例，"
             "先跑独立用例，之后重新开始该用例并调用同一动作查看进展。"
             "回执 ready 后用正常观察核对业务前置，记录是自然状态还是测试构造。"
-            "用例结论上报后，后续不依赖该环境的用例回到批次指定服和角色，或按各自前置重新选择。"
+            "用例结论上报后，后续不依赖该环境的用例回到批次目标服，并按各自前置选择角色。"
             "准备动作不能替代被验收的行为。现有方式都无法继续时再标记 blocked，记录缺什么、尝试和下一步。"
             "核对实际步骤与预期再提交 pass 或 fail，无法执行则提交 blocked 或 confirm 并解释原因。"
             "先 observe 看当前场景、Canvas、控件路径与可见文字。路径筛选可以找更深的控件。"

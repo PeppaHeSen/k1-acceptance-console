@@ -100,7 +100,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             save_json(cases, {"NK-1": [{"id": "TC-1", "state": "pending"}, {"id": "TC-2", "state": "pending"}]})
             tools = UnityTools(manifest)
             tools.bridge = Mock()
-            tools.bridge.code.side_effect = ["ready", "logged_in", True]
+            tools.bridge.code.side_effect = ["logged_in", True]
             options = tools.handle("environment_options", {})
             self.assertEqual(options["roles"]["2904"], [2])
             self.assertNotIn("command", options["actions"]["scenario"])
@@ -140,6 +140,26 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertEqual(json.loads(original.read_text(encoding="utf-8")), 0)
             tools.restore_game_view()
             self.assertFalse(original.exists())
+
+    def test_agent_can_switch_from_cached_role_to_discovered_role_on_target_server(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": temp, "test_roles": {"2903": [1]}})
+            tools = UnityTools(manifest)
+            tools.bridge = Mock()
+            roles = {"in_game": True, "current_server": 2904, "current_player": 1,
+                     "login_error": False, "roles_ready": True, "players": [2]}
+            tools.bridge.code.side_effect = [roles, roles, roles,
+                                            {"status": "role_picker_opened", "server": 2904, "player": 1},
+                                            "selected", "confirmed", "logged_in"]
+            self.assertEqual(tools.handle("available_test_roles", {})["players"], [2])
+            with self.assertRaisesRegex(ValueError, "没有该角色"):
+                tools.handle("select_test_role", {"player": 1})
+            with patch("worker.time.sleep"):
+                result = tools.handle("select_test_role", {"player": 2})
+            self.assertEqual(result, {"status": "logged_in", "server": 2903, "player": 2})
+            self.assertIn("PlayerID != 2", tools.guard)
+            tools.bridge.play.assert_not_called()
 
     def test_auto_result_blocks_unexecuted_cases(self):
         with TemporaryDirectory() as temp:
@@ -263,7 +283,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
 
             def unity(manifest):
                 bridge = Mock(manifest=manifest)
-                bridge.code.side_effect = ["playing", "logged_in"]
+                bridge.code.side_effect = ["playing"]
                 return bridge
 
             # Local changes to the skill checkout must never drift into a batch.
@@ -282,6 +302,8 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                 self.assertIn(rules[path], planning)
             self.assertIn(revision, planning)
             self.assertIn(revision, execution)
+            self.assertIn("available_test_roles", execution)
+            self.assertNotIn("testPlayer", json.loads((run / "runtime.json").read_text(encoding="utf-8"))["acceptance_scope"])
             self.assertNotIn("a different local workflow", execution)
             manifest = json.loads((run / "runtime.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["function_review"]["revision"], revision)

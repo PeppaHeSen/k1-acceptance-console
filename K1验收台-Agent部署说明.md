@@ -39,7 +39,7 @@ python3 worker.py --config <节点运行目录>/node.json
 
 ## Unity 运行验收
 
-在有桌面登录会话的 Mac 或 Windows 节点上启用。首次部署加入 `--unity-runtime`。已有节点在本机 `node.json` 中设置 `"unity_runtime": true`，配置下文的测试角色后，在用户的桌面会话中重启 Worker。网页配置向导中的「Unity」表示 Editor 和工程可读，「Unity 自动实测」显示已配置的测试服。提交分支或版本日验收时，填写测试服 ID，队列只会分配给支持该测试服自动实测的节点。
+在有桌面登录会话的 Mac 或 Windows 节点上启用。首次部署加入 `--unity-runtime`。已有节点在本机 `node.json` 中设置 `"unity_runtime": true`，配置测试服后，在用户的桌面会话中重启 Worker。网页配置向导中的「Unity」表示 Editor 和工程可读，「Unity 自动实测」显示已配置的测试服。提交分支或版本日验收时，填写测试服 ID，队列只会分配给支持该测试服自动实测的节点。
 
 把节点的客户端目录指向专用验收工程，提交前关闭该工程的 Unity。Worker 记录原分支和提交，直接还原暂存区和工作树中的 Git 跟踪文件，再切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和用于恢复的 `workspace.json`。在批次详情取得交接文件路径，由 Mac 上的验收人员或 Agent 登录目标服实测。服务端与配置通过实测环境核对。
 
@@ -47,13 +47,13 @@ Worker 接单后冻结一个 K1FunctionReview 提交。用例生成和实测共�
 
 网页选择的功能验收、版本日验收分别对应 FunctionReview 的 `development`、`mainline_regression`。自动验收在 Unity 中执行。Agent 在遇到缺少前置的用例时按技能查找现有条件，按需重登、切换测试身份，或使用节点上已配置的环境准备动作。准备过程、回执和用例结果进入批次执行记录，截图保存在执行节点的运行目录。
 
-全自动 Unity 验收需要在节点 `node.json` 配置 `"unity_test_roles": {"测试服数字ID": 角色数字ID}`，使用该节点已登录账号下允许验收的测试角色。每服也可配置数字数组，例如 `"unity_test_roles": {"2903": [266341, 266342]}`，首个角色用于默认登录，Agent 可以在运行中切到其他已配置角色。Unity 工程需启用本机 Editor Debug MCP，默认检查 21891–21893。若端口不同，可用 `unity_debug_ports` 指定本机端口列表。
+在节点 `node.json` 中用 `"unity_test_servers": ["2903"]` 配置可验收的测试服，也兼容旧版 `unity_test_roles` 中的服号。验收 Agent 读取本机 Unity 当前账号下目标服可用角色，按用例选择并验证实际身份。需要切换到目标服以外做专门的环境准备时，使用节点在 `unity_test_roles` 单独配置的角色。Unity 工程需启用本机 Editor Debug MCP，默认检查 21891–21893。若端口不同，可用 `unity_debug_ports` 指定本机端口列表。
 
 节点管理员可在 `node.json` 的 `unity_environment_actions` 中登记已有的环境准备脚本。每个动作填写 `kind`（`gm`、`simulation` 或 `jenkins`）、`server`、`player`、`description`、`command`（固定参数数组，首项为本机可执行文件的绝对路径）和可选 `timeout`（单次调用 1 到 180 秒，默认 90）。服和角色需出现在 `unity_test_roles`。GM 与故障模拟还需要 Unity 已登录该服和角色。可在 `parameters` 定义可选值和整数范围，例如 `{"stage":["prepare","active"],"count":{"min":1,"max":3}}`。Agent 执行时按用例选择具体参数。
 
 动作脚本从标准输入读取一条 JSON，包含 `batch`、`attempt`、`item`、`case`、`action`、`server`、`player`、`client`、`refs`、`function_review`、`parameters` 和 `operation`。脚本可复用该提交里的 FunctionReview GM 或 Jenkins 流程。同一次执行中，同动作、同参数会得到同一个 `operation`，脚本按它保存回执，重复调用时查询或复用已提交的动作。标准输出只返回 `{"status":"ready|pending|blocked","evidence":"可展示的回执摘要"}`。长时间的部署可先返回 `pending`，Agent 可以暂放该用例，跑其他独立用例后再查询。回执摘要会显示在网页，凭据、原始部署参数和敏感日志留在节点本地。Agent 收到 `ready` 后还要验证用例需要的业务前置。
 
-Worker 会等待工程导入、进入 Play、登录并核对实际角色，再通过 Unity 工具让 Agent 执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 关闭 Unity、还原工程并回传结果。省略测试服 ID 可提交基础链路联调。版本日可填写一个 Jira 单号，仅排队该项。
+Worker 等待工程导入并进入 Play，再交给验收 Agent 检查登录情况、按需切换角色及执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 关闭 Unity、还原工程并回传结果。省略测试服 ID 可提交基础链路联调。版本日可填写一个 Jira 单号，仅排队该项。
 
 屏幕适配用例在 Unity Game 窗口逐个应用目标分辨率并核对实际画面，Worker 在退出前恢复原尺寸。语言用例通过游戏内设置切换，客户端重启后接续同一测试角色，结束时恢复原语言。需要英雄或战力时，Agent 可以在指定的测试角色上通过正常玩法获得英雄、领取免费奖励和使用已有普通资源升级。英雄获得和升级可能保留在测试角色上。正式业务源码、数据表和线上热更属于独立流程。
 
