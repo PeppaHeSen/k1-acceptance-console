@@ -177,20 +177,25 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             node.sync_skill = Mock(return_value=(skill, revision, True))
             node.event = Mock()
             node.run_claude = Mock(side_effect=[{"summary": "已准备验收清单", "items": [
+                {"key": "NK-10786", "cases": [{"id": "无效编号", "title": "检查预览"}]},
                 {"key": "NK-9705", "cases": [{"id": "TC-01", "title": "检查半身像"}]},
             ]}, None])
             node.close_unity = Mock()
             process = Mock(pid=314, returncode=0)
             process.poll.side_effect = [None, None, 0]
-            job = {"id": 8, "attempt": "test-attempt", "items": [{"key": "NK-9705", "title": "布阵页"}],
+            job = {"id": 8, "attempt": "test-attempt", "items": [{"key": "NK-10786", "title": "皮肤界面"},
+                                                               {"key": "NK-9705", "title": "布阵页"}],
                    "config": {"mode": "branch", "refs": {"client": "dev_NK-9705"},
                               "source": "NK-9705", "server": "2903", "notes": ""}}
+            report_plan_error = Mock()
 
             def launch(*args, **kwargs):
                 if args[0][0] == "git":
                     return Popen(*args, **kwargs)
                 self.assertTrue((run / "cases.json").is_file())
                 self.assertTrue(any(call.args == ("case_snapshot",) for call in node.event.call_args_list))
+                self.assertEqual(report_plan_error.call_args.args[0], "NK-10786")
+                self.assertIn("第 1 条用例编号无效", report_plan_error.call_args.args[1])
                 return process
 
             def git(args, cwd=None, timeout=30):
@@ -208,7 +213,8 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             with patch("worker.command", side_effect=git), patch("worker.UnityBridge", side_effect=unity), \
                     patch("worker.subprocess.Popen", launch):
                 snapshot, runtime_rules = node.prepare_function_review()
-                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules), 0)
+                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules,
+                                                  report_plan_error), 0)
             node.sync_skill.assert_called_once_with(skill)
             planning, execution = (call.args[0] for call in node.run_claude.call_args_list)
             for path in FUNCTION_REVIEW_RUNTIME:
@@ -227,3 +233,8 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             snapshots = [call.kwargs["cases"] for call in node.event.call_args_list if call.args == ("case_snapshot",)]
             self.assertEqual(snapshots[0], [{"id": "TC-01", "title": "检查半身像", "state": "pending", "evidence": ""}])
             self.assertEqual(snapshots[1][0]["state"], "blocked")
+            report_plan_error.assert_called_once()
+            reports = json.loads((run / "result.json").read_text(encoding="utf-8"))["items"]
+            self.assertEqual(reports["NK-10786"]["result"], "blocked")
+            self.assertIn("第 1 条用例编号无效", reports["NK-10786"]["reason"])
+            self.assertNotIn("第 1 条用例编号无效", reports["NK-9705"]["reason"])
