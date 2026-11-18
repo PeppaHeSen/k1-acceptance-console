@@ -30,7 +30,7 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
-WORKER_VERSION = "0.14.14"
+WORKER_VERSION = "0.14.15"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -1503,6 +1503,17 @@ class Node:
         progress = []
         streamed = False
         result = None
+
+        def emit_output():
+            nonlocal streamed
+            if not progress:
+                return
+            text = "".join(progress)
+            progress.clear()
+            for offset in range(0, len(text), 16000):
+                self.event("ai_output", text=text[offset:offset + 16000], continuation=offset > 0)
+            streamed = streamed or bool(text)
+
         with error_path.open("wb") as error, subprocess.Popen(
             args, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=error, text=True, encoding="utf-8", errors="replace",
@@ -1517,45 +1528,50 @@ class Node:
                 if process.poll() is None:
                     process.kill()
 
-            seconds = (self.config.get("unity_agent_timeout", 1200) if pid_key == "agent_pid"
+            seconds = (self.config.get("unity_agent_timeout") if pid_key == "agent_pid"
                        else self.config.get("ai_timeout", 180))
-            timeout = threading.Timer(seconds, terminate)
-            timeout.start()
+            timeout = None
+            if seconds is not None:
+                timeout = threading.Timer(seconds, terminate)
+                timeout.start()
             try:
                 process.stdin.write(prompt)
                 process.stdin.close()
                 if self.attempt.get("record_prompt"):
                     for offset in range(0, len(prompt), 16000):
                         self.event("ai_prompt", text=prompt[offset:offset + 16000])
-                last_flush = time.monotonic()
                 for line in process.stdout:
                     try:
                         event = json.loads(line)
                     except ValueError:
                         continue
                     if event.get("type") == "stream_event":
-                        delta = event.get("event", {}).get("delta", {})
+                        message = event.get("event", {})
+                        delta = message.get("delta", {})
                         if delta.get("type") == "text_delta":
                             progress.append(delta.get("text", ""))
-                        if progress and (time.monotonic() - last_flush > 0.45 or len(progress) > 100):
-                            self.event("ai_output", text="".join(progress))
-                            streamed = True
-                            progress.clear()
-                            last_flush = time.monotonic()
+                        elif message.get("type") == "content_block_start":
+                            block = message.get("content_block", {})
+                            if block.get("type") == "text" and block.get("text"):
+                                progress.append(block["text"])
+                        elif message.get("type") in {"content_block_stop", "message_stop"}:
+                            emit_output()
                     elif event.get("type") == "result" and not event.get("is_error"):
                         result = event
-                        if not progress and not streamed and event.get("result"):
+                        emit_output()
+                        if not streamed and event.get("result"):
                             progress.append(event["result"])
-                    elif event.get("type") == "assistant" and manifest:
-                        for block in event.get("message", {}).get("content", []):
-                            if (block.get("type") == "tool_use" and block.get("name") in {
-                                    "mcp__k1_unity__prepare_environment", "mcp__k1_unity__select_test_role"}):
-                                self.event("stage_changed", text="按 FunctionReview 准备当前用例环境")
+                        emit_output()
+                    elif event.get("type") == "assistant":
+                        emit_output()
+                        if manifest:
+                            for block in event.get("message", {}).get("content", []):
+                                if (block.get("type") == "tool_use" and block.get("name") in {
+                                        "mcp__k1_unity__prepare_environment", "mcp__k1_unity__select_test_role"}):
+                                    self.event("stage_changed", text="按 FunctionReview 准备当前用例环境")
                     if progress_callback and event.get("type") in {"assistant", "user", "result"}:
                         progress_callback()
-                if progress:
-                    self.event("ai_output", text="".join(progress))
-                    streamed = True
+                emit_output()
                 returncode = process.wait()
                 self.check_stopped()
                 if returncode or expired.is_set() or result is None:
@@ -1563,7 +1579,8 @@ class Node:
                 if not streamed and not manifest:
                     raise RuntimeError("Claude Code 未返回可显示的输出，请查看节点日志。")
             finally:
-                timeout.cancel()
+                if timeout is not None:
+                    timeout.cancel()
                 self.attempt.pop(pid_key, None)
                 self.persist()
 

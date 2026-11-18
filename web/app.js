@@ -731,6 +731,9 @@ function renderRoute(navigating = false) {
   const generation = detailGeneration;
   refreshJob(id,generation);
   let live = false;
+  let aiText;
+  let legacyOutputOpen = false;
+  const sentenceEnd = /[。！？.!?…][”’"'）)\]】」』]*\s*$/u;
   stream = new EventSource(`/api/jobs/${id}/events`);
   stream.onopen = () => { live = false; };
   stream.addEventListener("live",()=>{ live = true; });
@@ -744,13 +747,21 @@ function renderRoute(navigating = false) {
       promptDetails.hidden = false;
       return;
     }
+    const isAI = data.kind === "ai_output";
+    const legacyOutput = isAI && typeof payload.continuation !== "boolean";
+    if (isAI && payload.text && aiText && (payload.continuation === true || (legacyOutput && legacyOutputOpen))) {
+      aiText.append(document.createTextNode(payload.text));
+      legacyOutputOpen = legacyOutput && !sentenceEnd.test(aiText.textContent);
+      followLatest();
+      return;
+    }
     const line = document.createElement("div");
     line.className = live && !reducedMotion.matches ? "entry is-new" : "entry";
     const stamp = document.createElement("time");
     stamp.textContent = clockTime(data.created);
     stamp.dateTime = new Date(data.created*1000).toISOString();
     const kind = document.createElement("span");
-    kind.textContent = data.kind==="ai_output" ? "AI" : "节点";
+    kind.textContent = isAI ? "AI" : "节点";
     const content = document.createElement("p");
     content.textContent = payload.text || payload.conclusion || (data.kind === "execution_started"
       ? payload.runtime
@@ -758,6 +769,10 @@ function renderRoute(navigating = false) {
         : "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
       : data.kind === "case_snapshot" ? payload.key+" · 已同步 "+payload.cases.length+" 条用例"
       : `${payload.key || ""} ${resultNames[payload.result] || ""}`.trim() || data.kind);
+    if (isAI) {
+      aiText = content;
+      legacyOutputOpen = legacyOutput && !sentenceEnd.test(content.textContent);
+    }
     line.append(stamp,kind,content);
     byId("logEntries").append(line);
     followLatest();

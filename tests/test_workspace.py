@@ -14,6 +14,44 @@ from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIM
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_claude_emits_complete_text_blocks_and_marks_long_continuations(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            node = Node.__new__(Node)
+            node.config = {}
+            node.attempt = {}
+            node.claude = "claude"
+            node.event = Mock()
+            node.persist = Mock()
+            node.check_stopped = Mock()
+            node.watch_stop = Mock(return_value=nullcontext())
+
+            def stream(kind, **data):
+                return {"type": "stream_event", "event": {"type": kind, **data}}
+
+            def delta(text):
+                return stream("content_block_delta", delta={"type": "text_delta", "text": text})
+
+            long_text = "检查记录\n" * 3201
+            events = [delta("雪夜铃"), {"type": "user"}, delta("屋预览正常。"), stream("content_block_stop"),
+                      delta(long_text), stream("content_block_stop"),
+                      {"type": "assistant", "message": {"content": [{"type": "text", "text": long_text}]}},
+                      {"type": "result", "result": "雪夜铃屋预览正常。"}]
+            process = Mock(pid=7, stdout=map(json.dumps, events))
+            process.wait.return_value = 0
+            with patch("worker.subprocess.Popen", return_value=nullcontext(process)), \
+                    patch("worker.threading.Timer") as timer:
+                node.run_claude("开始验收", root, root / "claude.stderr", manifest=root / "runtime.json")
+            timer.assert_not_called()
+            node.watch_stop.assert_called_once_with(process)
+
+            output = [call.kwargs for call in node.event.call_args_list]
+            self.assertEqual(output, [
+                {"text": "雪夜铃屋预览正常。", "continuation": False},
+                {"text": long_text[:16000], "continuation": False},
+                {"text": long_text[16000:], "continuation": True},
+            ])
+
     def test_worker_attaches_to_open_editor_without_switching_commits_or_closing_it(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
