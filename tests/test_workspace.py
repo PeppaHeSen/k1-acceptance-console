@@ -14,6 +14,42 @@ from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIM
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_codex_exec_shares_the_unity_tools_and_reports_live_progress(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            node = Node.__new__(Node)
+            node.config = {"url": "https://example.test", "id": "node", "token": "test-token"}
+            node.codex = "codex"
+            node.attempt = {"runner": "codex", "pack_writeback": True}
+            node.event = Mock()
+            node.persist = Mock()
+            node.check_stopped = Mock()
+            node.watch_stop = Mock(return_value=nullcontext())
+            callback = Mock()
+            task = root / "runtime.json"
+            events = [
+                {"type": "item.started", "item": {"type": "mcp_tool_call", "server": "k1_unity",
+                                                "tool": "select_test_role"}},
+                {"type": "item.completed", "item": {"type": "mcp_tool_call"}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "角色已登录"}},
+                {"type": "turn.completed"},
+            ]
+            process = Mock(pid=7, stdout=map(json.dumps, events))
+            process.wait.return_value = 0
+            with patch("worker.subprocess.Popen", return_value=nullcontext(process)) as popen:
+                node.run_ai("开始验收", root, root / "claude-runtime.stderr", manifest=task,
+                            progress_callback=callback)
+            args = popen.call_args.args[0]
+            config = next(arg for arg in args if arg.startswith("mcp_servers="))
+            self.assertIn("pack_item", config)
+            self.assertIn("--unity-tools", config)
+            self.assertNotIn("test-token", config)
+            self.assertIn("K1_CONSOLE_PACK_SESSION", popen.call_args.kwargs["env"])
+            self.assertIn("--ignore-user-config", args)
+            node.event.assert_any_call("ai_output", text="角色已登录", continuation=False)
+            self.assertEqual(callback.call_count, 3)
+            self.assertTrue((root / "codex-runtime.stderr").exists())
+
     def test_claude_emits_complete_text_blocks_and_marks_long_continuations(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

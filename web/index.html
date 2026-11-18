@@ -70,7 +70,14 @@
             <div><label for="method">测试方式</label><select id="method" name="method"><option>Unity</option><option>真机</option></select></div>
             <div><label for="platform">节点平台</label><select id="platform" name="os"><option value="">不限</option><option>macOS</option><option>Windows</option></select></div>
           </div>
-          <div class="field"><label for="node">执行节点</label><select id="node" name="node"></select></div>
+          <div class="pair field">
+            <div><label for="runner">AI 执行器</label><select id="runner" name="runner">
+              <option value="codex" selected>Codex CLI</option>
+              <option value="claude">Claude Code</option>
+            </select></div>
+            <div><label for="node">执行节点</label><select id="node" name="node" aria-describedby="runnerStatus"></select></div>
+          </div>
+          <p id="runnerStatus" class="field-note" role="status" hidden></p>
           <div class="field"><label for="server">测试服 ID（选填）</label><input id="server" name="server" type="text"></div>
           <fieldset class="field" aria-describedby="preparationNote">
             <legend class="legend">环境准备</legend>

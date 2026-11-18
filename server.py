@@ -22,7 +22,7 @@ import uuid
 from k1_sheet import SheetError, Workbook
 from pack_progress import PackProgress
 from release import MAX_WORKER_BYTES
-from worker import UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
+from worker import AI_RUNNERS, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -54,8 +54,16 @@ def packed(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def supports_runner(node, runner):
+    check = next((check for check in node["checks"] if check.get("label") == AI_RUNNERS[runner]), None)
+    # Old Workers ran Claude Code and did not report a separate executor capability.
+    return check.get("ok") is True if check is not None else runner == "claude"
+
+
 def supported_job(node, config):
     if config["method"] not in node["capabilities"] or config["os"] and config["os"] != node["os"]:
+        return False
+    if not supports_runner(node, config.get("runner", "claude")):
         return False
     if config["method"] == "Unity" and config["server"]:
         return UNITY_RUNTIME_CAPABILITY in node["capabilities"] and any(
@@ -210,6 +218,9 @@ class Console:
                     job["waiting"] = "没有匹配节点"
                 elif not any(node["online"] for node in peers):
                     job["waiting"] = "等待节点上线"
+                elif not any(node["online"] and supports_runner(node, job["config"].get("runner", "claude"))
+                             for node in peers):
+                    job["waiting"] = "等待可用的 " + AI_RUNNERS[job["config"].get("runner", "claude")] + " 节点"
                 elif not any(node["online"] and supported_job(node, job["config"]) for node in peers):
                     job["waiting"] = ("等待支持本批次配置的 Unity 自动实测节点"
                                       if job["config"]["method"] == "Unity" and job["config"]["server"]
@@ -504,6 +515,10 @@ class Console:
             if duplicate := prior(db):
                 return duplicate
         config = {key: bounded(body, key) for key in ("mode", "sheet", "branch", "source", "method", "os", "server")}
+        runner = body.get("runner", "claude")
+        if not isinstance(runner, str) or runner not in AI_RUNNERS:
+            raise ApiError(400, "请选择有效的 AI 执行器。")
+        config["runner"] = runner
         config["notes"] = bounded(body, "notes", 4000)
         config["purpose"] = self.config.get("profile", "integration")
         for flag in ("auto_refresh_config", "auto_deploy"):
@@ -556,7 +571,10 @@ class Console:
                 row = db.execute("SELECT * FROM nodes WHERE id=?", (assigned,)).fetchone()
                 if not row or config["os"] and row["os"] != config["os"]:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
-                if (config["method"] == "Unity" and config["server"] and not supported_job(self.node(row), config)):
+                node = self.node(row)
+                if not supports_runner(node, runner):
+                    raise ApiError(422, f"指定节点尚未就绪：{AI_RUNNERS[runner]}。")
+                if (config["method"] == "Unity" and config["server"] and not supported_job(node, config)):
                     raise ApiError(422, "指定节点暂不支持该测试服或所选环境准备选项的 Unity 自动实测。")
             job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
                 SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),

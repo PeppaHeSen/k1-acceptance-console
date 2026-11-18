@@ -30,8 +30,9 @@ API_VERSION = 1
 CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm", "skipped"}
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
+AI_RUNNERS = {"codex": "Codex CLI", "claude": "Claude Code"}
 BATCH_PREPARATION = {"refresh_config": "auto_refresh_config", "deploy_server": "auto_deploy"}
-WORKER_VERSION = "0.14.17"
+WORKER_VERSION = "0.14.18"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -1322,6 +1323,25 @@ def command(args, cwd=None, timeout=30):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True)
 
 
+def codex_executable(configured=None):
+    if os.name != "nt":
+        return configured or shutil.which("codex")
+    if configured and Path(configured).suffix.lower() == ".exe":
+        return configured
+    # Launch the native executable so Windows cmd.exe doesn't reparse CLI config arguments.
+    shim = (shutil.which(configured) or configured) if configured else shutil.which("codex.cmd")
+    if shim:
+        npm = Path(shim).parent / "node_modules" / "@openai"
+        arch = {"AMD64": "x64", "ARM64": "arm64"}.get(platform.machine().upper())
+        if arch:
+            package = f"codex-win32-{arch}"
+            for parent in (npm / "codex" / "node_modules" / "@openai", npm):
+                binary = next((parent / package / "vendor").glob("*/bin/codex.exe"), None)
+                if binary:
+                    return str(binary)
+    return None if configured else shutil.which("codex.exe")
+
+
 def resolve_repository(root, relative):
     relative = Path(relative)
     candidates = Path(root) / relative, Path(root) / relative.name
@@ -1529,8 +1549,21 @@ class Node:
                 raise ValueError()
             return "已登录"
 
-        ai = check("Claude Code", claude_login, "在执行账号的会话中配置 Claude Code。")
-        if all(paths) and skill and ai:
+        self.codex = codex_executable(self.config.get("codex"))
+
+        def codex_login():
+            if not self.codex:
+                raise FileNotFoundError()
+            command([self.codex, "login", "status"], timeout=10)
+            usage = command([self.codex, "exec", "--help"], timeout=10).stdout
+            if "--ignore-user-config" not in usage or "--ephemeral" not in usage:
+                raise ValueError()
+            return "已登录"
+
+        claude = check(AI_RUNNERS["claude"], claude_login, "在执行账号的会话中配置 Claude Code。")
+        codex = check(AI_RUNNERS["codex"], codex_login,
+                      "在执行账号的会话中安装或更新 Codex CLI，并运行 codex login。")
+        if all(paths) and skill and (claude or codex):
             methods = self.config.get("methods", ["Unity"])
             if "Unity" in methods:
                 editor_project = paths[0] / "client"
@@ -1697,25 +1730,59 @@ class Node:
             "不要编造测试执行、用例通过或回写。无需读取更多文件或调用工具。\n"
             + json.dumps({"mode": job["config"]["mode"], "versions": versions, "scope": scope}, ensure_ascii=False)
         )
-        self.run_claude(prompt, skill, self.state / "last-claude.stderr")
+        self.run_ai(prompt, skill, self.state / "last-claude.stderr")
+
+    def run_ai(self, prompt, cwd, error_path, *, manifest=None, progress_callback=None):
+        runner = self.attempt.get("runner", "claude")
+        if runner == "codex":
+            codex_log = error_path.with_name(error_path.name.replace("claude", "codex"))
+            self.run_codex(prompt, codex_log.parent, codex_log, manifest=manifest, progress_callback=progress_callback)
+        else:
+            self.run_claude(prompt, cwd, error_path, manifest=manifest, progress_callback=progress_callback)
+
+    def ai_mcp(self, manifest):
+        if manifest is None:
+            return {}, {}, None
+        mcp = {"command": sys.executable, "args": [str(Path(__file__).resolve()), "--unity-tools", str(manifest)]}
+        names = {**SKILL_TOOLS, **TOOLS}
+        env = None
+        if self.attempt.get("pack_writeback"):
+            names.update(PACK_TOOLS)
+            config = {key: self.config[key] for key in ("url", "id", "token", "ca_cert") if key in self.config}
+            env = {**os.environ, "K1_CONSOLE_PACK_SESSION": json.dumps(config)}
+        return mcp, names, env
 
     def run_claude(self, prompt, cwd, error_path, manifest=None, progress_callback=None):
-        mcp = {}
-        if manifest:
-            mcp["k1_unity"] = {"command": sys.executable,
-                               "args": [str(Path(__file__).resolve()), "--unity-tools", str(manifest)]}
+        mcp, names, env = self.ai_mcp(manifest)
         args = [self.claude, "-p", "--verbose", "--output-format", "stream-json",
                 "--include-partial-messages", "--tools", "", "--strict-mcp-config",
-                "--mcp-config", json.dumps({"mcpServers": mcp})]
-        env = None
+                "--mcp-config", json.dumps({"mcpServers": {"k1_unity": mcp} if mcp else {}})]
         if manifest:
-            names = {**SKILL_TOOLS, **TOOLS}
-            if self.attempt.get("pack_writeback"):
-                names.update(PACK_TOOLS)
-                config = {key: self.config[key] for key in ("url", "id", "token", "ca_cert") if key in self.config}
-                env = {**os.environ, "K1_CONSOLE_PACK_SESSION": json.dumps(config)}
             args.extend(["--allowedTools", ",".join("mcp__k1_unity__" + name for name in names),
                          "--no-session-persistence"])
+        self.run_ai_process("claude", args, env, prompt, cwd, error_path, manifest, progress_callback)
+
+    def run_codex(self, prompt, cwd, error_path, manifest=None, progress_callback=None):
+        mcp, names, env = self.ai_mcp(manifest)
+        args = [self.codex, "-a", "never", "exec", "--json", "--ephemeral", "--ignore-user-config",
+                "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
+                "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps",
+                "--disable", "plugins", "--disable", "skill_mcp_dependency_install", "-c", 'web_search="disabled"',
+                "-c", 'shell_environment_policy.exclude=["K1_CONSOLE_PACK_SESSION"]']
+        server = "{}"
+        if mcp:
+            cmd = json.dumps(mcp["command"], ensure_ascii=False)
+            argv = json.dumps(mcp["args"], ensure_ascii=False)
+            variables = '["K1_CONSOLE_PACK_SESSION"]' if env else "[]"
+            # Only the Worker-managed tool allowlist is approved for unattended calls.
+            server = (f'{{k1_unity={{command={cmd},args={argv},env_vars={variables},default_tools_approval_mode="approve",'
+                      f"enabled_tools={json.dumps(list(names))},required=true,tool_timeout_sec=240}}}}")
+        args.extend(["-c", "mcp_servers=" + server, "-"])
+        self.run_ai_process("codex", args, env, prompt, cwd, error_path, manifest, progress_callback)
+
+    def run_ai_process(self, runner, args, env, prompt, cwd, error_path, manifest, progress_callback):
+        runner_label = AI_RUNNERS[runner]
+        preparation_tools = {"prepare_environment", "select_test_role", "run_test_gm"}
         progress = []
         streamed = False
         result = None
@@ -1761,7 +1828,25 @@ class Node:
                         event = json.loads(line)
                     except ValueError:
                         continue
-                    if event.get("type") == "stream_event":
+                    if not isinstance(event, dict):
+                        continue
+                    kind = event.get("type")
+                    if runner == "codex":
+                        item = event.get("item") or {}
+                        if kind == "item.completed" and item.get("type") == "agent_message" and item.get("text"):
+                            progress.append(item["text"])
+                            emit_output()
+                        elif (manifest and kind == "item.started" and item.get("type") == "mcp_tool_call"
+                              and item.get("server") == "k1_unity" and item.get("tool") in preparation_tools):
+                            self.event("stage_changed", text="按 FunctionReview 准备验收环境")
+                        elif kind == "turn.completed":
+                            result = event
+                        elif kind == "turn.failed":
+                            result = None
+                        if progress_callback and kind in {"item.completed", "turn.completed", "turn.failed"}:
+                            progress_callback()
+                        continue
+                    if kind == "stream_event":
                         message = event.get("event", {})
                         delta = message.get("delta", {})
                         if delta.get("type") == "text_delta":
@@ -1772,29 +1857,28 @@ class Node:
                                 progress.append(block["text"])
                         elif message.get("type") in {"content_block_stop", "message_stop"}:
                             emit_output()
-                    elif event.get("type") == "result" and not event.get("is_error"):
+                    elif kind == "result" and not event.get("is_error"):
                         result = event
                         emit_output()
                         if not streamed and event.get("result"):
                             progress.append(event["result"])
                         emit_output()
-                    elif event.get("type") == "assistant":
+                    elif kind == "assistant":
                         emit_output()
                         if manifest:
                             for block in event.get("message", {}).get("content", []):
-                                if (block.get("type") == "tool_use" and block.get("name") in {
-                                        "mcp__k1_unity__prepare_environment", "mcp__k1_unity__select_test_role",
-                                        "mcp__k1_unity__run_test_gm"}):
+                                if (block.get("type") == "tool_use" and
+                                        block.get("name", "").removeprefix("mcp__k1_unity__") in preparation_tools):
                                     self.event("stage_changed", text="按 FunctionReview 准备验收环境")
-                    if progress_callback and event.get("type") in {"assistant", "user", "result"}:
+                    if progress_callback and kind in {"assistant", "user", "result"}:
                         progress_callback()
                 emit_output()
                 returncode = process.wait()
                 self.check_stopped()
                 if returncode or expired.is_set() or result is None:
-                    raise RuntimeError("Claude Code 执行失败或超时，请查看节点日志。")
+                    raise RuntimeError(f"{runner_label} 执行失败或超时，请查看节点日志。")
                 if not streamed and not manifest:
-                    raise RuntimeError("Claude Code 未返回可显示的输出，请查看节点日志。")
+                    raise RuntimeError(f"{runner_label} 未返回可显示的输出，请查看节点日志。")
             finally:
                 if timeout is not None:
                     timeout.cancel()
@@ -1804,6 +1888,7 @@ class Node:
     def execute(self, claim):
         job, root = claim["job"], claim["root"]
         self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": [],
+                        "runner": job["config"].get("runner", "claude"),
                         "record_prompt": "ai_prompt" in claim.get("features", []),
                         "pack_writeback": job["config"].get("writeback_enabled") is True}
         self.persist()
@@ -1824,7 +1909,7 @@ class Node:
                        root=root, versions=versions, options=job["config"], skill_remote_verified=fresh)
             if not fresh:
                 self.event("stage_changed", text="待核实技能远端更新，使用本机已知版本联调")
-            self.event("stage_changed", text="Claude Code 正在输出验收前核对结果")
+            self.event("stage_changed", text=f"{AI_RUNNERS[self.attempt['runner']]} 正在输出验收前核对结果")
             self.stream_ai(job, versions, skill)
             missing = [role for role, info in versions.items() if not info["target"]]
             mismatch = [role for role, info in versions.items() if info["target"] and info["local"] != info["target"]]
@@ -2218,8 +2303,8 @@ class Node:
     def auto_acceptance(self, bridge, manifest_path, upload_cases, prompt):
         run = manifest_path.parent
         try:
-            self.run_claude(prompt, run, run / "claude-runtime.stderr", manifest=manifest_path,
-                            progress_callback=upload_cases)
+            self.run_ai(prompt, run, run / "claude-runtime.stderr",
+                        manifest=manifest_path, progress_callback=upload_cases)
         finally:
             if (run / "game-view-original.json").exists():
                 unity = UnityTools(manifest_path)

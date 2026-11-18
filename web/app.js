@@ -162,6 +162,8 @@ function modeSummary(config) {
     : `分支验收 · ${config.branch} · ${config.source}`;
 }
 
+const runnerNames = {codex:"Codex CLI", claude:"Claude Code"};
+
 function choices(select, options, placeholder) {
   const current = select.value;
   const values = placeholder ? [["",placeholder], ...options] : options;
@@ -220,8 +222,16 @@ async function findBranch() {
 
 function nodeOptions() {
   const filter = byId("platform").value;
-  choices(byId("node"), view.nodes.filter(node => !filter || filter === node.os)
-    .map(node => [node.id,`${node.name} · ${node.os} · ${nodeStatus(node)}`]), "自动分配");
+  const runner = byId("runner").value;
+  const selectedRunner = runnerNames[runner];
+  const nodes = view.nodes.filter(node => {
+    const check = node.checks.find(item => item.label === selectedRunner);
+    return (!filter || filter === node.os) && (check ? check.ok === true : runner === "claude");
+  });
+  choices(byId("node"), nodes.map(node => [node.id,`${node.name} · ${node.os} · ${nodeStatus(node)}`]), "自动分配");
+  const status = byId("runnerStatus");
+  status.hidden = !stateReady || nodes.some(node=>node.online);
+  status.textContent = `当前没有在线的 ${selectedRunner} 节点，提交后将等待可用节点。`;
 }
 
 function nodeStatus(node) {
@@ -313,13 +323,13 @@ function renderFilteredQueue() {
       ["running","review","disconnected"].includes(job.state) : job.state===queueFilter);
     if (!matchesFilter || !terms.length) return matchesFilter;
     const fields = [job.id,job.operator,job.config.branch,job.config.source,job.config.sheet_name,
-      job.config.server,job.config.method,nodeName(job.node || job.assigned),stateNames[job.state],
+      job.config.server,job.config.method,runnerNames[job.config.runner || "claude"],nodeName(job.node || job.assigned),stateNames[job.state],
       job.stage,job.state==="running" ? "验收中" : "",job.config.mode==="version" ? "版本日验收" : "分支验收",
       ...job.items.flatMap(item=>[item.key,item.title,resultNames[item.result]])].map(normalize);
     return terms.every(term=>fields.some(field=>field.includes(term)));
   });
   const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
-    job.config.sheet_name,job.config.method,job.config.server,nodeName(job.node || job.assigned),job.operator,
+    job.config.sheet_name,job.config.method,job.config.runner,job.config.server,nodeName(job.node || job.assigned),job.operator,
     job.started,job.ended,job.waiting || job.stage,job.stop_requested,canStop(job),completion(job),
     job.items.map(item=>item.result)]));
   if (snapshot!==queueSnapshot) {
@@ -374,7 +384,7 @@ function renderQueue(jobs) {
     title.className = "job-title";
     title.textContent = job.config.mode==="branch" ? `#${job.id} · ${job.config.source}` : `#${job.id} · ${job.config.sheet_name} 版本日验收`;
     const detail = document.createElement("small");
-    detail.textContent = [job.config.branch,job.config.method,job.config.server && job.config.server+" 服",
+    detail.textContent = [job.config.branch,job.config.method,runnerNames[job.config.runner || "claude"],job.config.server && job.config.server+" 服",
       nodeName(job.node || job.assigned)].filter(Boolean).join(" · ");
     group.append(title, detail);
     const phase = document.createElement("div");
@@ -663,7 +673,7 @@ async function refreshJob(id, generation) {
     const job = await api("jobs/" + id);
     if (generation !== detailGeneration) return;
     set("detailTitle",`验收批次 #${job.id}`);
-    set("context",[modeSummary(job.config),job.node_name || "等待节点",
+    set("context",[modeSummary(job.config),runnerNames[job.config.runner || "claude"],job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
     const stop = byId("detailStop");

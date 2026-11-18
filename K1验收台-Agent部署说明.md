@@ -1,6 +1,6 @@
 # K1 验收台 Agent 部署说明
 
-本仓库可部署主服务器和执行节点。主服务器提供网页、钉钉进包表和队列，macOS 或 Windows 节点连接该服务器执行批次。当前版本支持只读链路联调，包括真实选单、接单和 Claude Code 输出。
+本仓库可部署主服务器和执行节点。主服务器提供网页、钉钉进包表和队列，macOS 或 Windows 节点连接该服务器执行批次，实时回传 Codex CLI 或 Claude Code 输出。
 
 把本文件和目标机器信息交给 Agent。说明要部署「主服务器」还是「执行节点」，以及是否允许它通过 SSH 操作目标机。主服务器需要内网地址和部署目录。执行节点需要主服务器的 HTTPS 地址、本机部署目录、三端工程根目录和要使用的验收方式。复用机器上已有的登录方式。
 
@@ -22,7 +22,7 @@ python3 lan.py --bind <主机内网IP> --port 8443 --upstream-port 8082 \
 
 ## 部署并登记执行节点
 
-1. 在目标 macOS 或 Windows 机器检出仓库，检查 Python、Git、Claude Code 的登录态，以及所选测试方式需要的 Unity 或 ADB。节点配置和运行记录放在本机独立目录。
+1. 在目标 macOS 或 Windows 机器检出仓库，检查 Python、Git，以及所选测试方式需要的 Unity 或 ADB。在 Worker 的执行账号下运行 `codex login` 或配置 Claude Code 的登录态。网页的「AI 执行器」默认选择 Codex CLI，节点需要使用支持 `codex exec --ignore-user-config --ephemeral` 的版本。也可以按批次选择 Claude Code。节点配置和运行记录放在本机独立目录。
 2. 在新节点上生成配置并启动执行程序。主服务器使用自签名证书时，通过可信渠道取得公用 PEM 文件并传给 `--ca-cert`。使用已受信任的证书时可以省略该参数。复用已登记节点的 `node.json` 时直接启动执行程序。
 
 ```bash
@@ -36,6 +36,8 @@ python3 worker.py --config <节点运行目录>/node.json
 4. 节点上线后，在配置向导中保存节点本机三端工程根目录。三端 Git 仓库可分别放在 `K1Client/k1_client`、`K1Game/game` 和 `K1Dataconfig/dataconfig`，也可直接放在根目录下的 `k1_client`、`game` 和 `dataconfig`。节点会检查工程和技能仓库，满足对应能力时显示「可用」。使用真机时传 `--method 真机`，并确认 ADB 能检测到已授权设备。
 
 执行程序会自动识别 macOS / Windows，把配对结果写入本机 `node.json`。将该文件保留在原节点的私有运行目录中，供重启后继续使用。网页中的操作员名称用于记录操作，按 IP 登记节点适用于可信内网。
+
+Worker 在节点检查中分别报告 Codex CLI 和 Claude Code 是否可用。网页将批次分配给所选执行器已就绪的节点。CLI 不在执行账号的 PATH 时，可用 `provision.py --codex <可执行文件>` 配置，或在已有 `node.json` 中设置 `codex`。Windows 上使用 `codex.exe` 的路径。
 
 ## Unity 运行验收
 

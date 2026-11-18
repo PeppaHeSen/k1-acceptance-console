@@ -10,6 +10,35 @@ from worker import ExecutionStopped, Node, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTI
 
 
 class QueueActionsTest(unittest.TestCase):
+    def test_jobs_only_route_to_the_requested_ai_runner(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+            nodes = []
+            for name, checks in (
+                ("Claude", [{"label": "Claude Code", "ok": True}]),
+                ("Codex", [{"label": "Codex CLI", "ok": True}, {"label": "Claude Code", "ok": False}]),
+            ):
+                enrolled = console.create_node({"name": name, "os": "Windows"})
+                node = console.agent(enrolled["id"], enrolled["token"])
+                console.configure_node(node["id"], {"root": "C:/QA"})
+                console.heartbeat(node, {"root": "C:/QA", "os": "Windows", "capabilities": ["Unity"], "checks": checks})
+                nodes.append(node)
+            claude, codex = nodes
+            request = {"mode": "branch", "source": "NK-9705", "branch": "dev_NK-9705",
+                       "method": "Unity", "runner": "codex", "request": "verify-codex-routing"}
+            with self.assertRaisesRegex(ApiError, "Codex CLI"):
+                console.submit({**request, "node": claude["id"]})
+            with self.assertRaisesRegex(ApiError, "AI 执行器"):
+                console.submit({**request, "runner": ["bogus"]})
+            job_id = console.submit(request)["id"]
+            self.assertIsNone(console.claim(claude)["job"])
+            job = console.claim(codex)["job"]
+            self.assertEqual((job["id"], job["config"]["runner"]), (job_id, "codex"))
+            del request["runner"]
+            old_id = console.submit({**request, "request": "verify-old-api-routing"})["id"]
+            old = console.claim(claude)["job"]
+            self.assertEqual((old["id"], old["config"]["runner"]), (old_id, "claude"))
+
     def test_runtime_job_waits_for_a_node_with_the_requested_test_server(self):
         with TemporaryDirectory() as tmp:
             console = Console(Path(tmp) / "console.sqlite3", {}, None)
