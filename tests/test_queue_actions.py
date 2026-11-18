@@ -3,7 +3,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from server import ApiError, Console
 from worker import ExecutionStopped, Node, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK
@@ -31,7 +31,30 @@ class QueueActionsTest(unittest.TestCase):
             self.assertIsNone(console.claim(node)["job"])
             beat["checks"][0]["servers"].append("2903")
             console.heartbeat(node, beat)
+            self.assertIsNone(console.claim(node)["job"])
+            beat["checks"][0]["batch_preparation"] = True
+            console.heartbeat(node, beat)
             self.assertEqual(console.claim(node)["job"]["id"], job_id)
+
+    def test_version_day_uses_entire_sheet_and_keeps_preparation_flags_independent(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+            rows = [{"key": "NK-1", "title": "事项一"}, {"key": "NK-2", "title": "事项二"}]
+            console.workbook = Mock(document="https://example.test/pack")
+            console.workbook.sheets.return_value = [{"id": "sheet", "name": "602"}]
+            console.workbook.entries.return_value = rows
+            request = {"request": "verify-preparation-0001", "mode": "version", "method": "Unity",
+                       "sheet": "sheet", "branch": "dev"}
+            job = console.detail(console.submit(request)["id"])
+            self.assertEqual(job["items"], rows)
+            self.assertEqual(job["config"]["source"], "")
+            self.assertTrue(job["config"]["auto_refresh_config"])
+            self.assertTrue(job["config"]["auto_deploy"])
+            branch = {"request": "verify-preparation-0002", "mode": "branch", "method": "Unity",
+                      "source": "NK-1", "branch": "dev_NK-1", "auto_refresh_config": False}
+            config = console.detail(console.submit(branch)["id"])["config"]
+            self.assertFalse(config["auto_refresh_config"])
+            self.assertTrue(config["auto_deploy"])
 
     def test_linked_merge_request_can_resolve_a_differently_named_branch(self):
         key = "NK-9705"

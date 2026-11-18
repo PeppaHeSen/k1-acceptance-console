@@ -2,7 +2,7 @@
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +20,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from k1_sheet import SheetError, Workbook
+from pack_progress import PackProgress
 from release import MAX_WORKER_BYTES
 from worker import UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
 
@@ -34,7 +35,7 @@ METHODS = {"Unity", "真机"}
 CAPABILITIES = METHODS | {UNITY_RUNTIME_CAPABILITY}
 EVENTS = {"execution_started", "stage_changed", "ai_output", "ai_prompt", "item_finished", "case_snapshot",
           "execution_finished", "execution_error", "execution_stopped"}
-RESULTS = {"pass", "fail", "blocked", "review", "error"}
+RESULTS = {"pass", "fail", "blocked", "review", "error", "skipped"}
 HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
 DEFAULT_COMPLETED_LIMIT = 100
@@ -59,7 +60,9 @@ def supported_job(node, config):
     if config["method"] == "Unity" and config["server"]:
         return UNITY_RUNTIME_CAPABILITY in node["capabilities"] and any(
             check.get("label") == UNITY_RUNTIME_CHECK and check.get("ok") is True and
-            isinstance(check.get("servers"), list) and config["server"] in check["servers"]
+            isinstance(check.get("servers"), list) and config["server"] in check["servers"] and
+            (not config.get("writeback_enabled") or check.get("pack_writeback") is True) and
+            (not (config.get("auto_refresh_config") or config.get("auto_deploy")) or check.get("batch_preparation") is True)
             for check in node["checks"]
         )
     return True
@@ -91,6 +94,7 @@ class Console:
         self.database = database
         self.config = config
         self.workbook = workbook
+        self.pack_progress = PackProgress(self.db, workbook)
         self.local_evidence = None
         try:
             node = json.loads((Path(database).parent / "node.json").read_text(encoding="utf-8"))
@@ -132,6 +136,17 @@ class Console:
                 CREATE TABLE IF NOT EXISTS node_releases (
                     node TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
                     installed TEXT NOT NULL, requested TEXT, error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS pack_claims (
+                    document TEXT NOT NULL, sheet TEXT NOT NULL, source TEXT NOT NULL,
+                    job INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    prior_owner TEXT NOT NULL, marker TEXT NOT NULL, final_status TEXT,
+                    PRIMARY KEY(document,sheet,source)
+                );
+                CREATE TABLE IF NOT EXISTS pack_results (
+                    job INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    item TEXT NOT NULL, result TEXT NOT NULL, reason TEXT NOT NULL,
+                    PRIMARY KEY(job,item)
                 );
             """)
         with self.db(write=True) as db:
@@ -196,7 +211,7 @@ class Console:
                 elif not any(node["online"] for node in peers):
                     job["waiting"] = "等待节点上线"
                 elif not any(node["online"] and supported_job(node, job["config"]) for node in peers):
-                    job["waiting"] = ("等待具备该测试服 Unity 自动实测能力的节点"
+                    job["waiting"] = ("等待支持本批次配置的 Unity 自动实测节点"
                                       if job["config"]["method"] == "Unity" and job["config"]["server"]
                                       else "等待节点配置或依赖检查")
                 else:
@@ -490,14 +505,20 @@ class Console:
                 return duplicate
         config = {key: bounded(body, key) for key in ("mode", "sheet", "branch", "source", "method", "os", "server")}
         config["notes"] = bounded(body, "notes", 4000)
-        config.update(writeback_enabled=False, auto_deploy=False, auto_refresh_config=False,
-                      purpose=self.config.get("profile", "integration"))
+        config["purpose"] = self.config.get("profile", "integration")
+        for flag in ("auto_refresh_config", "auto_deploy"):
+            config[flag] = body.get(flag, True)
+            if type(config[flag]) is not bool:
+                raise ApiError(400, f"{flag} 必须为布尔值。")
         if config["method"] not in METHODS or config["os"] not in {"", "macOS", "Windows"}:
             raise ApiError(400, "请选择有效的测试方式和平台。")
         if config["method"] == "Unity" and config["server"] and not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
             raise ApiError(400, "请填写有效的测试服 ID。")
-        if any(body.get(key) for key in ("writeback_enabled", "auto_deploy", "auto_refresh_config")):
-            raise ApiError(400, "本部署配置只允许关闭自动部署、配置转换和回写的联调。")
+        can_writeback = config["mode"] == "version" and config["method"] == "Unity" and bool(config["server"])
+        writeback = body.get("writeback_enabled", can_writeback)
+        if type(writeback) is not bool or (writeback and not can_writeback):
+            raise ApiError(400, "进包表回写仅用于指定测试服的 Unity 版本日验收。")
+        config["writeback_enabled"] = writeback
         if config["mode"] == "version":
             if config["branch"] not in {"dev", "qa"}:
                 raise ApiError(400, "版本日目标分支必须为 dev 或 qa。")
@@ -536,7 +557,7 @@ class Console:
                 if not row or config["os"] and row["os"] != config["os"]:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
                 if (config["method"] == "Unity" and config["server"] and not supported_job(self.node(row), config)):
-                    raise ApiError(422, "指定节点尚未启用该测试服的 Unity 自动实测。")
+                    raise ApiError(422, "指定节点暂不支持该测试服或所选环境准备选项的 Unity 自动实测。")
             job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
                 SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),
                            COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?,?""",
@@ -659,6 +680,69 @@ class Console:
                 return {"job": job, "root": node["root"], "features": ["ai_prompt"]}
         return {"job": None}
 
+    def pack_log(self, job, text):
+        with self.db(write=True) as db:
+            db.execute("INSERT INTO events(job,kind,payload,created) VALUES(?,?,?,?)",
+                       (job["id"], "pack_status", packed({"text": text}), time.time()))
+
+    def pack_action(self, node, body):
+        with self.pack_progress.lock:
+            return self._pack_action(node, body)
+
+    def _pack_action(self, node, body):
+        attempt = bounded(body, "attempt", 32)
+        action = bounded(body, "action", 12)
+        if action not in {"inspect", "claim", "finish", "release", "cleanup"}:
+            raise ApiError(400, "进包表动作无效。")
+        with self.db() as db:
+            row = db.execute("SELECT * FROM jobs WHERE attempt=? AND node=?", (attempt, node["id"])).fetchone()
+        if not row or row["state"] != "running" or (row["stop_requested"] and action != "cleanup"):
+            raise ApiError(409, "批次尚未接单、已停止或不属于该节点。")
+        job = self.job(row)
+        self.require_pack(job)
+        if action == "cleanup":
+            return self.cleanup_pack(job)
+        key = bounded(body, "item", 80)
+        item = next((entry for entry in job["items"] if entry["key"] == key), None)
+        if not item:
+            raise ApiError(400, "该事项不在批次清单中。")
+        result = "release" if action == "release" else None
+        reason = bounded(body, "reason", 1000)
+        if action == "finish":
+            result = bounded(body, "result", 12)
+            if result not in {"pass", "fail"}:
+                raise ApiError(400, "进包表只接收已确认的通过或未通过结论。")
+        if result and not reason:
+            raise ApiError(400, "请填写事项结论或释放原因。")
+        try:
+            reply = self.pack_progress.item(job, item, action, result, reason)
+        except SheetError as error:
+            self.pack_log(job, f"{key} · 进包表同步待确认 · {error}")
+            raise
+        if reply.get("text"):
+            details = f" · {reason}" if result == "release" else ""
+            self.pack_log(job, f"{key} · {reply['text']}{details}")
+        return reply
+
+    def require_pack(self, job):
+        config = job["config"]
+        if (not config.get("writeback_enabled") or config["mode"] != "version" or not self.workbook
+                or config.get("document") != self.workbook.document):
+            raise ApiError(403, "该批次没有当前进包表的写回权限。")
+
+    def cleanup_pack(self, job):
+        if not job["config"].get("writeback_enabled"):
+            return {"status": "cleaned"}
+        self.require_pack(job)
+        try:
+            reply = self.pack_progress.cleanup(job)
+        except SheetError as error:
+            self.pack_log(job, f"进包表清理待确认 · {error}")
+            raise
+        if reply.get("text"):
+            self.pack_log(job, reply["text"])
+        return reply
+
     def event(self, node, body):
         attempt, kind, seq = bounded(body, "attempt"), bounded(body, "kind"), body.get("seq")
         payload = body.get("payload")
@@ -667,7 +751,9 @@ class Console:
         if kind == "ai_prompt" and (not isinstance(payload.get("text"), str) or not 0 < len(payload["text"]) <= 16000):
             raise ApiError(400, "AI 提示词片段格式无效。")
         value = packed(payload)
-        with self.db(write=True) as db:
+        terminal = kind in {"execution_finished", "execution_stopped"}
+        guard = self.pack_progress.lock if terminal else nullcontext()
+        with guard, self.db(write=True) as db:
             row = db.execute("SELECT * FROM jobs WHERE attempt=? AND node=?", (attempt, node["id"])).fetchone()
             if not row:
                 retired = db.execute("SELECT last_seq FROM retired_jobs WHERE attempt=? AND node=?",
@@ -682,6 +768,8 @@ class Console:
                 return {"ack": row["last_seq"]}
             if row["state"] not in {"running", "review"} or seq != row["last_seq"] + 1:
                 raise ApiError(409, "执行已关闭或事件序号不连续。")
+            if terminal and db.execute("SELECT 1 FROM pack_claims WHERE job=?", (row["id"],)).fetchone():
+                raise ApiError(409, "批次还有未确认的进包表占用。")
             items = json.loads(row["items"])
             stage, state = row["stage"], row["state"]
             if kind == "stage_changed":
@@ -727,10 +815,14 @@ class Console:
             return db.execute("SELECT COALESCE(MAX(id),0) FROM events WHERE job=?", (job,)).fetchone()[0]
 
     def close_review(self, job_id, body):
+        with self.pack_progress.lock:
+            return self._close_review(job_id, body)
+
+    def _close_review(self, job_id, body):
         reason = bounded(body, "reason", 500)
         if not reason:
             raise ApiError(400, "请记录待核对批次的结束原因。")
-        with self.db(write=True) as db:
+        with self.db() as db:
             row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not row or row["state"] != "review":
                 raise ApiError(409, "批次不在待核对状态。")
@@ -739,6 +831,11 @@ class Console:
             started = db.execute("SELECT 1 FROM events WHERE job=? AND kind='execution_started'", (job_id,)).fetchone()
             if not last_error or started and json.loads(last_error["payload"]).get("process_exited") is not True:
                 raise ApiError(409, "需先由执行节点核对原进程及待上传事件。")
+        self.cleanup_pack(self.job(row))
+        with self.db(write=True) as db:
+            row = db.execute("SELECT * FROM jobs WHERE id=? AND state='review'", (job_id,)).fetchone()
+            if not row:
+                raise ApiError(409, "批次已离开待核对状态。")
             items = json.loads(row["items"])
             for item in items:
                 if "result" not in item:
@@ -770,6 +867,7 @@ class Handler(BaseHTTPRequestHandler):
                                       self.headers.get("Authorization", "").removeprefix("Bearer "))
                 action = {"/api/agent/heartbeat": self.app.heartbeat, "/api/agent/claim": lambda n, _: self.app.claim(n),
                           "/api/agent/event": self.app.event, "/api/agent/update": self.app.update_package,
+                          "/api/agent/pack": self.app.pack_action,
                           "/api/agent/update-failed": self.app.update_failed}.get(path)
                 if not action:
                     raise ApiError(404, "接口不存在。")

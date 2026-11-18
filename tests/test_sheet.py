@@ -42,6 +42,6 @@ class WorkbookTest(TestCase):
         self.assertEqual(entries[1]["row"], 2)
         self.assertEqual(entries[1]["title"], "可验收；补充内容")
         self.assertEqual(entries[1]["source_rows"], [
-            {"row": 2, "title": "可验收"},
-            {"row": 3, "title": "补充内容"},
+            {"row": 2, "title": "可验收", "keys": ["NK-1234", "NK-1237", "NK-1238"]},
+            {"row": 3, "title": "补充内容", "keys": ["NK-1237"]},
         ])

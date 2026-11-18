@@ -4,7 +4,7 @@ const byId = id => document.getElementById(id);
 const set = (id, text) => { byId(id).textContent = text; };
 const form = byId("submitForm");
 const stateNames = {queued:"排队中", running:"执行中", review:"待核对", disconnected:"失联待核对", done:"已结束"};
-const resultNames = {pass:"通过", fail:"未通过", blocked:"阻塞", review:"待补验", error:"执行异常"};
+const resultNames = {pass:"通过", fail:"未通过", blocked:"阻塞", review:"待补验", error:"执行异常", skipped:"已跳过"};
 let view = {sheets:{items:[]}, nodes:[], jobs:[]};
 let stream;
 let jobView;
@@ -22,7 +22,7 @@ const clockTime = value => new Date(value*1000).toLocaleTimeString("zh-CN",{hour
 const loadedVersion = document.querySelector('meta[name="k1-version"]').content;
 const caseLabels = {pending:"待执行",running:"验收中",confirm:"待确认",...resultNames};
 const resultTone = {pass:"pass",fail:"error",blocked:"error",error:"error",confirm:"review",review:"review",running:"active"};
-const finishedCases = new Set(["pass","fail","blocked","confirm","review","error"]);
+const finishedCases = new Set(["pass","fail","blocked","confirm","review","error","skipped"]);
 let queueFilter = "all";
 let queueSnapshot;
 let evidenceImages = [];
@@ -682,7 +682,8 @@ async function refreshJob(id, generation) {
     const outcomes = isCaseProgress ? job.items.flatMap(item=>item.cases.map(test=>test.state)) : job.items.map(item=>item.result);
     const labels = isCaseProgress ? caseLabels : resultNames;
     set("summary", Object.entries(labels).filter(([key])=>outcomes.includes(key)).map(([key,name]) =>
-      `${name} ${outcomes.filter(outcome=>outcome===key).length}`).concat("未回写").join(" · "));
+      `${name} ${outcomes.filter(outcome=>outcome===key).length}`)
+      .concat(job.config.writeback_enabled ? "进包表同步见执行记录" : "未回写").join(" · "));
     renderChecklist(job);
     tick();
   } catch(error) {
@@ -928,6 +929,8 @@ byId("refresh").addEventListener("click",async event => {
 });
 action(form,async data => {
   const options = Object.fromEntries(data);
+  options.auto_refresh_config = data.has("auto_refresh_config");
+  options.auto_deploy = data.has("auto_deploy");
   if (options.mode==="branch" && !options.branch.trim()) {
     await findBranch();
     if (options.source.trim()!==byId("source").value.trim()) return;

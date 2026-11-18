@@ -38,7 +38,7 @@ def publish(config, source, commit, notes):
         raise ValueError("需要 GitHub Release 对应的完整提交 SHA")
     if not 0 < len(notes.strip()) <= 2000:
         raise ValueError("请输入 1 至 2000 字的更新说明")
-    for name in ("VERSION", "server.py", "lan.py", "release.py", "web/index.html", "web/login.html",
+    for name in ("VERSION", "server.py", "k1_sheet.py", "pack_progress.py", "lan.py", "release.py", "web/index.html", "web/login.html",
                  "web/app.js", "web/appearance.js", "web/styles.css"):
         if (source / name).read_bytes() != (deployed / name).read_bytes():
             raise ValueError(f"主节点尚未部署此次发布的 {name}")

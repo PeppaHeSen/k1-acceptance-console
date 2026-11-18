@@ -221,6 +221,70 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             tools.record({**first, "state": "running"})
             self.assertIn("readback 123", (run / "environment.json").read_text(encoding="utf-8"))
 
+    def test_gm_uses_current_login_and_does_not_require_configured_actions(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"project": temp, "server": "2903"})
+            tools = UnityTools(manifest)
+            tools.bridge = Mock()
+            tools.bridge.code.side_effect = ["logged_in", {"status": "loading"},
+                {"status": "ready", "commands": [{"command": "addasset"}]}, "sent", "sent", "sent"]
+            gm = {"command": "addasset", "scope": "player", "arguments": ["item", "42", "1"],
+                  "operation": "seed-box", "reason": "验证实际兑换"}
+            with self.assertRaisesRegex(ValueError, "先开始"):
+                tools.handle("run_test_gm", gm)
+            tools.active = ("NK-10944", "ITEM-01")
+            with self.assertRaisesRegex(ValueError, "先登录"):
+                tools.handle("run_test_gm", gm)
+            with patch.object(tools, "available_test_roles", return_value={"players": [266341]}):
+                self.assertEqual(tools.select_test_role({"server": 2903, "player": 266341})["status"], "logged_in")
+            self.assertEqual(tools.environment_options()["actions"], {})
+            self.assertEqual(tools.environment_options()["unity_gm"]["tool"], "run_test_gm")
+            self.assertEqual(tools.handle("test_gm_help", {"query": "addasset"})["status"], "loading")
+            self.assertEqual(tools.handle("test_gm_help", {"query": "addasset"})["commands"][0]["command"], "addasset")
+            sent = tools.handle("run_test_gm", gm)
+            self.assertEqual(sent, {"status": "sent", "server": 2903, "player": 266341, "operation": "seed-box"})
+            code = tools.bridge.code.call_args.args[0]
+            self.assertIn("ServerId != 2903", code)
+            self.assertIn("PlayerID != 266341", code)
+            self.assertIn("Logic.LoginMgrNew.I.IsLogin", code)
+            self.assertIn("tokens.Insert(0, Logic.LPlayer.I.PlayerID.ToString())", code)
+            self.assertIn('UI.UIGM.SendGMReq("addasset", false, tokens.ToArray());', code)
+            self.assertEqual(tools.handle("run_test_gm", gm), sent)
+            self.assertEqual(tools.bridge.code.call_count, 4)
+            with self.assertRaisesRegex(ValueError, "不同的 GM"):
+                tools.handle("run_test_gm", {**gm, "arguments": ["item", "42", "2"]})
+            tools.handle("run_test_gm", {**gm, "command": "actv", "subcommand": "newActv", "scope": "server",
+                                         "arguments": ["10"], "operation": "open-activity"})
+            code = tools.bridge.code.call_args.args[0]
+            self.assertIn('{ "newActv", "10" }', code)
+            self.assertNotIn("tokens.Insert", code)
+            tools.handle("run_test_gm", {**gm, "command": "actv", "subcommand": "rtAddCard",
+                                         "arguments": ["10", "1"], "operation": "seed-card"})
+            self.assertIn("tokens.Insert(1, Logic.LPlayer.I.PlayerID.ToString())", tools.bridge.code.call_args.args[0])
+            self.assertIn("GM 已发送", (Path(temp) / "environment.json").read_text(encoding="utf-8"))
+
+    def test_gm_does_not_retry_an_uncertain_dispatch(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"project": temp, "server": "2903"})
+            tools = UnityTools(manifest)
+            tools.player = 266341
+            tools.active = ("NK-10944", "ITEM-02")
+            tools.bridge = Mock()
+            tools.bridge.code.side_effect = ["help_pending", None, ConnectionError("reply lost")]
+            gm = {"command": "addasset", "scope": "player", "arguments": ["item", "42", "2"],
+                  "operation": "seed-box", "reason": "构造持有道具的状态"}
+            self.assertEqual(tools.handle("run_test_gm", gm)["status"], "help_pending")
+            with self.assertRaisesRegex(RuntimeError, "登录状态已变"):
+                tools.handle("run_test_gm", gm)
+            self.assertEqual(tools.handle("run_test_gm", gm)["status"], "unconfirmed")
+            self.assertEqual(tools.handle("run_test_gm", gm)["status"], "unconfirmed")
+            tools.server = 2904
+            with self.assertRaisesRegex(ValueError, "批次测试服"):
+                tools.handle("run_test_gm", gm)
+            self.assertEqual(tools.bridge.code.call_count, 3)
+
     def test_game_view_resize_checks_screenshot_pixels_instead_of_screen_dimensions(self):
         with TemporaryDirectory() as temp:
             run = Path(temp)
@@ -370,6 +434,11 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             run.mkdir()
             node = Node.__new__(Node)
             node.config = {"unity_editor": str(base / "2022.3.1f1" / "Unity"), "unity_test_roles": {"2903": 1}}
+            node.config["unity_environment_actions"] = {
+                name: {"kind": kind, "server": server, "command": [sys.executable, name], "description": name}
+                for name, kind, server in (("config", "refresh_config", 2903), ("deploy", "deploy_server", 2903),
+                                           ("other-server", "deploy_server", 2904))
+            }
             node.attempt = {"id": "test-attempt"}
             node.cancel_attempt = None
             node.persist = Mock()
@@ -382,8 +451,9 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             process.poll.return_value = 0
             job = {"id": 8, "attempt": "test-attempt", "items": [{"key": "NK-10786", "title": "皮肤界面"},
                                                                {"key": "NK-9705", "title": "布阵页"}],
-                   "config": {"mode": "branch", "refs": {"client": "dev_NK-9705"},
-                              "source": "NK-9705", "server": "2903", "notes": ""}}
+                   "config": {"mode": "branch", "refs": {"client": "dev_NK-9705", "game": "dev", "data": "qa"},
+                              "source": "NK-9705", "server": "2903", "notes": "",
+                              "auto_refresh_config": True, "auto_deploy": True}}
             editor_started = False
             bridges = []
 
@@ -400,6 +470,24 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                 bridges[0].play.assert_not_called()
                 self.assertFalse((run / "cases.json").exists())
                 tools = UnityTools(manifest)
+                self.assertEqual(set(tools.handle("environment_options", {})["actions"]), {"config", "deploy"})
+                with patch("worker.subprocess.run") as action:
+                    action.side_effect = [Mock(stdout=json.dumps({"status": status, "evidence": status}))
+                                          for status in ("pending", "ready", "ready")]
+                    refresh = {"action": "config", "reason": "构建本轮配置"}
+                    self.assertEqual(tools.handle("prepare_environment", refresh)["status"], "pending")
+                    self.assertEqual(tools.handle("prepare_environment", refresh)["status"], "ready")
+                    self.assertEqual(tools.handle("prepare_environment", {
+                        "action": "deploy", "reason": "启动批次测试服"})["status"], "ready")
+                    first, poll, deploy = [json.loads(call.kwargs["input"]) for call in action.call_args_list]
+                    self.assertEqual(first["operation"], poll["operation"])
+                    self.assertIsNone(first["case"])
+                    self.assertEqual(deploy["server"], 2903)
+                    self.assertEqual(deploy["refs"], job["config"]["refs"])
+                    tools.manifest["acceptance_scope"]["batch_preparation"]["auto_refresh_config"] = False
+                    with self.assertRaisesRegex(ValueError, "未开启"):
+                        tools.handle("prepare_environment", refresh)
+                    self.assertEqual(action.call_count, 3)
                 self.assertEqual(tools.handle("start_unity", {}), {"status": "requested"})
                 progress_callback()
                 self.assertTrue(editor_started)

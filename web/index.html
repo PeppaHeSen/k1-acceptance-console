@@ -38,7 +38,6 @@
             </div>
           </fieldset>
           <fieldset id="versionFields">
-            <div class="field"><label for="versionIssue">仅验收 Jira 单号（选填）</label><input id="versionIssue" name="source" type="text" maxlength="40"></div>
             <div class="field">
               <label for="sheet">进包表页签</label>
               <div class="sheet-controls">
@@ -73,6 +72,14 @@
           </div>
           <div class="field"><label for="node">执行节点</label><select id="node" name="node"></select></div>
           <div class="field"><label for="server">测试服 ID（选填）</label><input id="server" name="server" type="text"></div>
+          <fieldset class="field" aria-describedby="preparationNote">
+            <legend class="legend">环境准备</legend>
+            <div class="pair preparation-options">
+              <label><input name="auto_refresh_config" type="checkbox" checked> 自动刷新配置</label>
+              <label><input name="auto_deploy" type="checkbox" checked> 自动部署服务器</label>
+            </div>
+            <p id="preparationNote" class="field-note">指定测试服的 Unity 实测中，由 AI 执行节点配置的准备动作。</p>
+          </fieldset>
           <div class="field"><label for="notes">验收要求（选填）</label><textarea id="notes" name="notes" maxlength="4000"></textarea></div>
           <p class="field-note">填写测试服 ID 后，仅配置了该测试服的 Unity 自动实测节点可以接单。</p>
           <button class="primary" type="submit">提交验收批次</button>
