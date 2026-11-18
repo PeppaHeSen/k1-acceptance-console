@@ -57,7 +57,8 @@ class PackProgress:
             return True
         if current != expected:
             return False
-        self.workbook.update_acceptance(sheet, columns, row["row"], status, owner)
+        self.workbook.update_acceptance(sheet, columns, row["row"], status, owner,
+                                        legacy_values=row["legacy_values"])
         _, rows = self.snapshot(sheet)
         verified = rows.get(source)
         if not verified or (verified["status"], verified["owner"]) != (status, owner):

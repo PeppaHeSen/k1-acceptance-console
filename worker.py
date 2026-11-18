@@ -31,7 +31,7 @@ CASE_STATES = {"pending", "running", "pass", "fail", "blocked", "confirm", "skip
 UNITY_RUNTIME_CAPABILITY = "UnityRuntime"
 UNITY_RUNTIME_CHECK = "Unity 自动实测"
 BATCH_PREPARATION = {"refresh_config": "auto_refresh_config", "deploy_server": "auto_deploy"}
-WORKER_VERSION = "0.14.16"
+WORKER_VERSION = "0.14.17"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",

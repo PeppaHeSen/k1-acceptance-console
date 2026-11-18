@@ -23,20 +23,31 @@ class MemoryWorkbook(Workbook):
                      ["其他人接手", "", "", "待验收", "已合进dev", "NK-13"]]
         self.updates = []
         self.interrupt_write = False
+        self.legacy = False
 
     def call(self, *args):
         if args == ("list",):
             return {"sheets": [{"sheetId": "release", "name": "602"}]}
         if args[:2] == ("range", "read"):
-            return {"returnedRange": f"A1:F{len(self.rows)}", "hasMore": False, "values": self.rows}
+            data = {"returnedRange": f"A1:F{len(self.rows)}", "hasMore": False}
+            if self.legacy:
+                return {**data, "values": self.rows}
+            return {**data, "cells": [[{"value": cell} for cell in row] for row in self.rows],
+                    "rowIndices": list(range(1, len(self.rows) + 1))}
         assert args[:4] == ("range", "update", "--sheet-id", "release")
         address = args[5]
         row = int(address.split(":")[0][1:])
         values = json.loads(args[7])[0]
-        assert address == f"B{row}:D{row}" and values[1] == {}
-        self.rows[row - 1][1] = values[0]["text"]
-        self.rows[row - 1][3] = values[2]["text"]
-        self.updates.append((row, values[2]["text"]))
+        assert address == f"B{row}:D{row}"
+        if self.legacy:
+            owner, skip, status = values
+            assert skip is None and isinstance(owner, str) and isinstance(status, str)
+        else:
+            assert values[1] == {}
+            owner, status = values[0]["text"], values[2]["text"]
+        self.rows[row - 1][1] = owner
+        self.rows[row - 1][3] = status
+        self.updates.append((row, status))
         if self.interrupt_write:
             self.interrupt_write = False
             raise SheetError("模拟写入已送达但响应丢失")
@@ -131,6 +142,13 @@ class PackProgressTest(TestCase):
         self.assertEqual(self.workbook.rows[-1][3], "待验收")
         self.action(0, "cleanup")
         self.assertEqual(self.console.pack_progress.item(second, duplicate, "claim")["status"], "claimed")
+
+    def test_legacy_cli_writes_primitive_cells_and_verifies_readback(self):
+        self.workbook.legacy = True
+        self.assertEqual(self.action(0, "claim", "NK-13")["status"], "claimed")
+        self.assertEqual(self.workbook.rows[2][3], "验收中")
+        self.assertEqual(self.action(0, "finish", "NK-13", result="pass", reason="实测通过")["status"], "recorded")
+        self.assertEqual(self.workbook.rows[2][3], "已完成")
 
     def test_mcp_tool_uses_worker_identity_and_requires_observed_result(self):
         node, job = self.jobs[0]

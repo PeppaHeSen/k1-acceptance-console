@@ -74,7 +74,7 @@ class Workbook:
             fields = {name: row[col] if col < len(row) else "" for name, col in columns.items()}
             keys = list(dict.fromkeys(JIRA_KEY.findall(fields["JIRA单"].upper())))
             rows.append({"row": index, "title": fields["内容"], "keys": keys, "status": fields["状态"],
-                         "merge": fields["合并状态"], "owner": fields.get("验收人", "")})
+                         "merge": fields["合并状态"], "owner": fields.get("验收人", ""), "legacy_values": legacy})
         return columns, rows
 
     def entries(self, sheet_id):
@@ -96,7 +96,7 @@ class Workbook:
             entry["title"] = "；".join(titles)
         return list(entries.values())
 
-    def update_acceptance(self, sheet_id, columns, row, status, owner):
+    def update_acceptance(self, sheet_id, columns, row, status, owner, *, legacy_values=False):
         if "验收人" not in columns:
             raise SheetError("进包表缺少唯一的验收人列，无法核对在线归属。")
         fields = {columns["状态"]: status, columns["验收人"]: owner}
@@ -110,7 +110,10 @@ class Workbook:
                 letters = chr(65 + digit) + letters
             return f"{letters}{row}"
 
-        values = [{"type": "text", "text": fields[col]} if col in fields else {}
-                  for col in range(first, last + 1)]
+        if legacy_values:
+            values = [fields.get(col) for col in range(first, last + 1)]
+        else:
+            values = [{"type": "text", "text": fields[col]} if col in fields else {}
+                      for col in range(first, last + 1)]
         self.call("range", "update", "--sheet-id", sheet_id, "--range", f"{address(first)}:{address(last)}",
                   "--values", json.dumps([values], ensure_ascii=False))
