@@ -264,6 +264,8 @@
   dialog .config { border: 0; box-shadow: none; background: transparent; backdrop-filter: none; }
   .config { padding: 17px; }
   .config > .primary { margin-top: 14px; }
+  .submit-status { margin-top: 10px; }
+  .submit-status.error { color: var(--error); }
   .dialog-head, .dialog-content, .settings-actions { padding: 13px 16px; }
   .dialog-head { border-bottom: 1px solid var(--line); }
   .dialog-content > p { margin-bottom: 8px; white-space: pre-wrap; }

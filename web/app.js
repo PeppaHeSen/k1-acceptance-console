@@ -78,13 +78,18 @@ function retentionEffect() {
   return removed;
 }
 
-async function api(path, body) {
+async function api(path, body, timeout = body === undefined ? 8000 : undefined) {
   // Skip the browser's HTTP cache even when another tab is polling the same URL.
-  const result = await fetch("/api/" + path, body === undefined ? {cache:"no-store", signal:AbortSignal.timeout(8000)} : {
+  const options = body === undefined ? {cache:"no-store"} : {
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
-  });
+  };
+  if (timeout) options.signal = AbortSignal.timeout(timeout);
+  const result = await fetch("/api/" + path, options);
   if (result.status === 401) throw new Error("请先登录验收台。");
-  const data = await result.json();
+  const data = await result.json().catch(error=>{
+    if (result.ok || error.name !== "SyntaxError") throw error;
+    return {};
+  });
   if (!result.ok) throw Object.assign(new Error(data.error || "操作失败。"), {status:result.status});
   return data;
 }
@@ -92,6 +97,14 @@ async function api(path, body) {
 function message(text) {
   byId("notice").hidden = !text;
   set("notice",text);
+}
+
+function submissionStatus(text, failed = false) {
+  const status = byId("submitStatus");
+  status.textContent = text;
+  status.classList.toggle("error",failed);
+  status.hidden = !text;
+  if (failed) status.scrollIntoView({block:"nearest"});
 }
 
 function label(text, tone = "") {
@@ -823,14 +836,15 @@ function renderRoute(navigating = false) {
   };
 }
 
-function action(element, handler) {
+function action(element, handler, onError = error=>message(error.message)) {
   element.addEventListener("submit",async event => {
     event.preventDefault();
     message("");
     const button = element.querySelector("button[type=submit]");
     button.disabled = true;
-    try { await handler(new FormData(element)); }
-    catch(error) { message(error.message); }
+    const data = new FormData(element);
+    try { await handler(data); }
+    catch(error) { onError(error,data); }
     finally { button.disabled = false; }
   });
 }
@@ -970,6 +984,24 @@ byId("refresh").addEventListener("click",async event => {
   }
 });
 action(form,async data => {
+  submissionStatus("正在提交验收批次…");
+  try {
+    await submitJob(data);
+  } finally {
+    submissionStatus("");
+  }
+}, (error,data) => {
+  if (error.status === 422 && error.message === "没有符合条件的进包项。") {
+    const sheet = view.sheets.items.find(item=>item.id === data.get("sheet"))?.name || "当前";
+    submissionStatus(`${sheet} 页签没有可验收的事项。进包项须同时标记为「待验收」和「已合进dev」。`,true);
+  } else if (error.name === "TimeoutError" || error.name === "TypeError" || [502,504].includes(error.status)) {
+    submissionStatus("暂未确认提交结果。保持当前配置重试，系统会避免重复创建批次。",true);
+  } else {
+    submissionStatus(error.message,true);
+  }
+});
+
+async function submitJob(data) {
   const options = Object.fromEntries(data);
   options.runner = "auto";
   options.auto_refresh_config = data.has("auto_refresh_config");
@@ -985,14 +1017,14 @@ action(form,async data => {
     const request = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2,"0")).join("");
     submitAttempt = {signature,request};
   }
-  const {id} = await api("jobs",{...options,request:submitAttempt.request});
+  const {id} = await api("jobs",{...options,request:submitAttempt.request},65000);
   submitAttempt = null;
   sheetChoice = "";
   renderSheets();
   byId("jobDialog").close();
   message(`已提交批次 #${id}。`);
   await refreshState();
-});
+}
 action(byId("setupForm"),async () => {
   await api(`nodes/${byId("setupNode").value}/setup`,{root:byId("root").value});
   await refreshState();
