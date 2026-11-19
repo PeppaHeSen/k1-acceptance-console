@@ -253,6 +253,7 @@
   .entry time { color: var(--console-muted); font-size: 12px; }
   .entry span { color: var(--console-blue); }
   .entry p { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #finalOutputText { white-space: pre-wrap; overflow-wrap: anywhere; }
 
   dialog { padding: 0; width: min(540px, calc(100vw - 28px)); max-height: calc(100dvh - 30px);
     border: 1px solid var(--glass-edge); border-radius: 20px; color: var(--ink); box-shadow: var(--shadow); }

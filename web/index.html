@@ -68,13 +68,6 @@
           </fieldset>
           <div class="pair field">
             <div><label for="method">测试方式</label><select id="method" name="method"><option>Unity</option><option>真机</option></select></div>
-            <div><label for="platform">节点平台</label><select id="platform" name="os"><option value="">不限</option><option>macOS</option><option>Windows</option></select></div>
-          </div>
-          <div class="pair field">
-            <div><label for="runner">AI 执行器</label><select id="runner" name="runner">
-              <option value="codex" selected>Codex CLI</option>
-              <option value="claude">Claude Code</option>
-            </select></div>
             <div><label for="node">执行节点</label><select id="node" name="node" aria-describedby="runnerStatus"></select></div>
           </div>
           <p id="runnerStatus" class="field-note" role="status" hidden></p>
@@ -199,19 +192,26 @@
         </div>
         <div class="detail-actions">
           <span id="state" class="pill"></span>
+          <a id="codexSession" class="secondary" hidden>在节点 Mac 的 Codex App 中打开</a>
           <button id="summaryToggle" class="secondary" type="button" aria-pressed="false">仅看进度</button>
           <span id="detailStop" hidden></span>
         </div>
       </div>
-      <section class="card run">
-        <div class="title-line"><h2 id="progressTitle">运行进度</h2><span id="progressCount" class="sub mono"></span></div>
-        <p class="sub" id="stage"></p>
-        <div class="field"><div class="track" id="progress" role="progressbar" aria-labelledby="progressTitle"><span class="track-fill"></span></div><p id="summary" class="sub"></p></div>
+      <section class="card run" id="runPanel">
+        <div id="progressReport">
+          <div class="title-line"><h2 id="progressTitle">运行进度</h2><span id="progressCount" class="sub mono"></span></div>
+          <p class="sub" id="stage"></p>
+          <div class="field"><div class="track" id="progress" role="progressbar" aria-labelledby="progressTitle"><span class="track-fill"></span></div><p id="summary" class="sub"></p></div>
+        </div>
         <form id="closeReview" class="field" hidden>
           <label for="closeReason">待核对批次的结束原因</label>
           <input id="closeReason" type="text" required maxlength="500">
           <button type="submit" class="secondary">确认结束</button>
         </form>
+      </section>
+      <section class="card run" id="finalOutputPanel" hidden aria-labelledby="finalOutputTitle">
+        <h2 id="finalOutputTitle">AI 输出</h2>
+        <p id="finalOutputText" role="status"></p>
       </section>
       <nav class="detail-jump" aria-label="批次详情导航">
         <button type="button" class="secondary" data-detail-jump="checklist">验收清单</button>

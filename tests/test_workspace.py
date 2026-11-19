@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import io
 import json
 from pathlib import Path
 from subprocess import Popen
@@ -10,10 +11,24 @@ from unittest.mock import Mock, patch
 from server import Console
 
 from worker import (FUNCTION_REVIEW_CASES, FUNCTION_REVIEW_RUNTIME, UNITY_RUNTIME_CAPABILITY, FunctionReview, Node,
-                    UnityBridge, UnityTools, acceptance_checkout, command, resolve_repository, save_json)
+                    UnityBridge, UnityTools, acceptance_checkout, command, resolve_repository, save_json,
+                    serve_unity_tools)
 
 
 class AcceptanceCheckoutTest(unittest.TestCase):
+    def test_login_view_encodes_screenshot_as_mcp_image(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {})
+            request = {"id": 1, "method": "tools/call", "params": {"name": "login_view"}}
+            reply = io.StringIO()
+            with patch("worker.sys.stdin", io.StringIO(json.dumps(request))), patch("worker.sys.stdout", reply), \
+                    patch("worker.UnityTools") as tools:
+                tools.return_value.handle.return_value = ({"language": "login"}, b"png")
+                serve_unity_tools(manifest)
+            content = json.loads(reply.getvalue())["result"]["content"]
+            self.assertEqual(content[1], {"type": "image", "data": "cG5n", "mimeType": "image/png"})
+
     def test_codex_exec_shares_the_unity_tools_and_reports_live_progress(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -28,6 +43,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             callback = Mock()
             task = root / "runtime.json"
             events = [
+                {"type": "thread.started", "thread_id": "019b2acb-764a-7c54-8f32-fbaedd6ba073"},
                 {"type": "item.started", "item": {"type": "mcp_tool_call", "server": "k1_unity",
                                                 "tool": "select_test_role"}},
                 {"type": "item.completed", "item": {"type": "mcp_tool_call"}},
@@ -41,6 +57,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
                             progress_callback=callback)
             args = popen.call_args.args[0]
             config = next(arg for arg in args if arg.startswith("mcp_servers="))
+            self.assertIn(config, (root / ".codex" / "config.toml").read_text(encoding="utf-8"))
             self.assertIn("pack_item", config)
             self.assertIn("--unity-tools", config)
             self.assertNotIn("test-token", config)
@@ -49,6 +66,35 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             node.event.assert_any_call("ai_output", text="角色已登录", continuation=False)
             self.assertEqual(callback.call_count, 3)
             self.assertTrue((root / "codex-runtime.stderr").exists())
+            self.assertIn("--ephemeral", args)
+            node.event.reset_mock()
+            node.attempt["runner"] = "codex_app"
+            process.stdout = map(json.dumps, events)
+            with patch("worker.subprocess.Popen", return_value=nullcontext(process)) as popen:
+                node.run_ai("开始验收", root, root / "claude-runtime.stderr", manifest=task,
+                            progress_callback=callback)
+            self.assertNotIn("--ephemeral", popen.call_args.args[0])
+            node.event.assert_any_call("codex_session", thread_id=events[0]["thread_id"])
+            node.event.assert_any_call("ai_output", text="角色已登录", continuation=False)
+            node.event.reset_mock()
+            node.attempt.update(final_output_only=True, pack_writeback=False)
+            last_message = {"type": "item.completed", "item": {"type": "agent_message", "text": "本轮结论"}}
+            process.stdout = map(json.dumps, [*events[:-1], last_message, events[-1]])
+            with patch("worker.subprocess.Popen", return_value=nullcontext(process)) as popen:
+                node.run_ai("开始验收", root, root / "claude-runtime.stderr", manifest=task)
+            self.assertNotIn("register_cases", repr(popen.call_args.args[0]))
+            self.assertEqual([call.kwargs["text"] for call in node.event.call_args_list if call.args == ("ai_output",)],
+                             ["本轮结论"])
+            node.event.reset_mock()
+            node.attempt["reporting"] = "output"
+            process.stdout = map(json.dumps, [*events[:-1], last_message, events[-1]])
+            with patch("worker.subprocess.Popen", return_value=nullcontext(process)):
+                node.run_ai("开始验收", root, root / "claude-runtime.stderr", manifest=task)
+            self.assertEqual([call.kwargs for call in node.event.call_args_list if call.args == ("ai_output",)], [
+                {"text": "角色已登录", "continuation": False},
+                {"text": "本轮结论", "continuation": False},
+                {"text": "本轮结论", "continuation": False, "final": True},
+            ])
 
     def test_claude_emits_complete_text_blocks_and_marks_long_continuations(self):
         with TemporaryDirectory() as temp:
@@ -106,7 +152,7 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             node.cancel_attempt = None
             node.event = Mock()
             node.persist = Mock()
-            node.prepare_function_review = Mock(return_value=({"revision": "skill"}, "rules"))
+            node.prepare_function_review = Mock(return_value={"revision": "skill"})
             node.unity_prompt = Mock(return_value="run acceptance")
             def use_existing(prompt, cwd, error_path, *, manifest, progress_callback):
                 self.assertEqual(UnityTools(manifest).handle("start_unity", {}), {"status": "attached"})
@@ -337,6 +383,46 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertEqual(json.loads(original.read_text(encoding="utf-8")), 0)
             tools.restore_game_view()
             self.assertFalse(original.exists())
+
+    def test_final_only_game_click_uses_current_screenshot_and_target_guard(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": temp, "test_player": 1, "final_output_only": True})
+            tools = UnityTools(manifest)
+            tools.bridge.code = Mock(return_value={"status": "dispatched", "route": "unity_pointer"})
+            with self.assertRaisesRegex(ValueError, "capture_view"):
+                tools.handle("click_game", {"x": 0, "y": 0})
+            tools.game_view_size = (1080, 2160)
+            with self.assertRaisesRegex(ValueError, "1080×2160"):
+                tools.handle("click_game", {"x": 1080, "y": 0})
+            self.assertEqual(tools.handle("click_game", {"x": 1079, "y": 2159}),
+                             {"status": "dispatched", "route": "unity_pointer", "x": 1079, "y": 2159})
+            code = tools.bridge.code.call_args.args[0]
+            self.assertIn("ServerId != 2903", code)
+            self.assertIn("Vector2(1079 + 0.5f, 2160 - (2159 + 0.5f))", code)
+            self.assertIn('GetProperty("targetRenderSize", flags)', code)
+            self.assertIn("system.RaycastAll(pointer, hits)", code)
+            self.assertIn("map.UpdateMapTapFilter(pointer, entity)", code)
+            with self.assertRaisesRegex(ValueError, "capture_view"):
+                tools.handle("click_game", {"x": 0, "y": 0})
+            tools.bridge.code.assert_called_once()
+
+    def test_continuous_game_recording_reports_observed_intervals_and_samples(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "2903", "project": temp, "test_player": 1, "final_output_only": True})
+            tools = UnityTools(manifest)
+            tools.bridge.code = Mock(return_value=True)
+            clip = tools.handle("record_view", {"action": "start", "seconds": 30, "fps": 24})["clip"]
+            folder = tools.recording_dir(clip)
+            self.assertIn("WaitForEndOfFrame", tools.bridge.code.call_args.args[0])
+            for index, ms in enumerate((40, 80, 130), 1):
+                (folder / f"frame-{index:05d}-{ms:06d}.jpg").write_bytes(bytes([index]))
+            status = tools.handle("record_view", {"action": "stop", "clip": clip})
+            self.assertEqual((status["frames"], status["max_gap_ms"]), (3, 50))
+            info, images = tools.handle("sample_recording", {"clip": clip, "start": 2})
+            self.assertEqual(info["frames"], [{"frame": 2, "ms": 80}, {"frame": 3, "ms": 130}])
+            self.assertEqual(images, [b"\x02", b"\x03"])
 
     def test_agent_can_switch_from_cached_role_to_discovered_role_on_target_server(self):
         with TemporaryDirectory() as temp:
@@ -574,21 +660,29 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             (skill / FUNCTION_REVIEW_RUNTIME[1]).write_text("a different local workflow", encoding="utf-8")
             with patch("worker.command", side_effect=git), patch("worker.UnityBridge", side_effect=unity), \
                     patch("worker.subprocess.Popen", launch):
-                snapshot, runtime_rules = node.prepare_function_review()
-                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, base, snapshot, runtime_rules), 0)
+                snapshot = node.prepare_function_review()
+                self.assertEqual(node.launch_unity(job, "b" * 40, project, run, snapshot), 0)
             node.sync_skill.assert_called_once_with(skill)
             node.run_claude.assert_called_once()
             execution = node.run_claude.call_args.args[0]
+            self.assertIn("review-k1-function/SKILL.md", execution)
+            self.assertIn("batch_context", execution)
+            self.assertIn(str(project), execution)
+            self.assertLess(len(execution), 600)
             for path in (*FUNCTION_REVIEW_RUNTIME, *FUNCTION_REVIEW_CASES):
-                self.assertIn(rules[path], execution)
-            self.assertIn(revision, execution)
-            self.assertIn("start_unity", execution)
-            self.assertIn("editor_status", execution)
-            self.assertIn("enter_test_play", execution)
-            self.assertIn("available_test_roles", execution)
+                self.assertNotIn(rules[path], execution)
+                self.assertEqual(FunctionReview(snapshot).read(path), rules[path])
             self.assertNotIn("testPlayer", json.loads((run / "runtime.json").read_text(encoding="utf-8"))["acceptance_scope"])
             self.assertNotIn("a different local workflow", execution)
             manifest = json.loads((run / "runtime.json").read_text(encoding="utf-8"))
+            tools = UnityTools(run / "runtime.json")
+            self.assertEqual(tools.handle("batch_context", {})["items"], manifest["items"])
+            with self.assertRaisesRegex(ValueError, "不在本批次"):
+                tools.handle("batch_context", {"item": "NK-0"})
+            with patch("worker.command", return_value=Mock(stdout="关联提交")) as git:
+                context = tools.handle("batch_context", {"item": "NK-9705"})
+            self.assertEqual(context["changes"], "关联提交")
+            self.assertIn(manifest["client"], git.call_args.args[0])
             self.assertEqual(manifest["function_review"]["revision"], revision)
             self.assertEqual(manifest["acceptance_scope"]["acceptanceMode"], "development")
             with self.assertRaises(ValueError):

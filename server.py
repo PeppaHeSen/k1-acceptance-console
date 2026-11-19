@@ -22,7 +22,7 @@ import uuid
 from k1_sheet import SheetError, Workbook
 from pack_progress import PackProgress
 from release import MAX_WORKER_BYTES
-from worker import AI_RUNNERS, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
+from worker import AI_RUNNERS, CODEX_THREAD_ID, REPORTING_MODES, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTIME_CHECK, normalize_cases
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -33,7 +33,7 @@ APPEARANCE_ASSETS = {
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
 CAPABILITIES = METHODS | {UNITY_RUNTIME_CAPABILITY}
-EVENTS = {"execution_started", "stage_changed", "ai_output", "ai_prompt", "item_finished", "case_snapshot",
+EVENTS = {"execution_started", "stage_changed", "ai_output", "ai_prompt", "codex_session", "item_finished", "case_snapshot",
           "execution_finished", "execution_error", "execution_stopped"}
 RESULTS = {"pass", "fail", "blocked", "review", "error", "skipped"}
 HEARTBEAT_TIMEOUT = 30
@@ -55,9 +55,16 @@ def packed(value):
 
 
 def supports_runner(node, runner):
+    if runner == "auto":
+        return preferred_runner(node) is not None
     check = next((check for check in node["checks"] if check.get("label") == AI_RUNNERS[runner]), None)
     # Old Workers ran Claude Code and did not report a separate executor capability.
     return check.get("ok") is True if check is not None else runner == "claude"
+
+
+def preferred_runner(node):
+    available = [check.get("label") for check in node["checks"] if check.get("ok") is True]
+    return next((runner for runner in ("codex_app", "codex", "claude") if AI_RUNNERS[runner] in available), None)
 
 
 def supported_job(node, config):
@@ -69,6 +76,7 @@ def supported_job(node, config):
         return UNITY_RUNTIME_CAPABILITY in node["capabilities"] and any(
             check.get("label") == UNITY_RUNTIME_CHECK and check.get("ok") is True and
             isinstance(check.get("servers"), list) and config["server"] in check["servers"] and
+            (config.get("reporting", "final") == "final" or check.get("acceptance_reporting") is True) and
             (not config.get("writeback_enabled") or check.get("pack_writeback") is True) and
             (not (config.get("auto_refresh_config") or config.get("auto_deploy")) or check.get("batch_preparation") is True)
             for check in node["checks"]
@@ -220,7 +228,8 @@ class Console:
                     job["waiting"] = "等待节点上线"
                 elif not any(node["online"] and supports_runner(node, job["config"].get("runner", "claude"))
                              for node in peers):
-                    job["waiting"] = "等待可用的 " + AI_RUNNERS[job["config"].get("runner", "claude")] + " 节点"
+                    runner = job["config"].get("runner", "claude")
+                    job["waiting"] = "等待 AI 执行器就绪" if runner == "auto" else f"等待可用的 {AI_RUNNERS[runner]} 节点"
                 elif not any(node["online"] and supported_job(node, job["config"]) for node in peers):
                     job["waiting"] = ("等待支持本批次配置的 Unity 自动实测节点"
                                       if job["config"]["method"] == "Unity" and job["config"]["server"]
@@ -516,7 +525,7 @@ class Console:
                 return duplicate
         config = {key: bounded(body, key) for key in ("mode", "sheet", "branch", "source", "method", "os", "server")}
         runner = body.get("runner", "claude")
-        if not isinstance(runner, str) or runner not in AI_RUNNERS:
+        if not isinstance(runner, str) or (runner != "auto" and runner not in AI_RUNNERS):
             raise ApiError(400, "请选择有效的 AI 执行器。")
         config["runner"] = runner
         config["notes"] = bounded(body, "notes", 4000)
@@ -530,6 +539,18 @@ class Console:
         if config["method"] == "Unity" and config["server"] and not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
             raise ApiError(400, "请填写有效的测试服 ID。")
         can_writeback = config["mode"] == "version" and config["method"] == "Unity" and bool(config["server"])
+        final_only = body.get("final_output_only", False)
+        if type(final_only) is not bool or final_only and (
+                config["method"] != "Unity" or not config["server"] or runner != "codex_app"):
+            raise ApiError(400, "简化验收需要选择 Codex App、Unity 和测试服。")
+        config["final_output_only"] = final_only
+        reporting = body.get("reporting", "final")
+        if reporting not in REPORTING_MODES or not final_only and reporting != "final":
+            raise ApiError(400, "请选择有效的简化验收回传内容。")
+        if final_only:
+            config["reporting"] = reporting
+            config["auto_refresh_config"] = config["auto_deploy"] = False
+            can_writeback = False
         writeback = body.get("writeback_enabled", can_writeback)
         if type(writeback) is not bool or (writeback and not can_writeback):
             raise ApiError(400, "进包表回写仅用于指定测试服的 Unity 版本日验收。")
@@ -573,7 +594,8 @@ class Console:
                     raise ApiError(400, "指定节点不存在或平台不兼容。")
                 node = self.node(row)
                 if not supports_runner(node, runner):
-                    raise ApiError(422, f"指定节点尚未就绪：{AI_RUNNERS[runner]}。")
+                    label = AI_RUNNERS.get(runner, "Codex 或 Claude Code")
+                    raise ApiError(422, f"指定节点尚未就绪：{label}。")
                 if (config["method"] == "Unity" and config["server"] and not supported_job(node, config)):
                     raise ApiError(422, "指定节点暂不支持该测试服或所选环境准备选项的 Unity 自动实测。")
             job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
@@ -588,8 +610,20 @@ class Console:
             if not row:
                 raise ApiError(404, "批次不存在。")
             job = self.job(row)
+            if job["config"].get("final_output_only") and job["state"] in {"done", "review"}:
+                output = db.execute("SELECT payload FROM events WHERE job=? AND kind='ai_output' ORDER BY id", (job_id,))
+                live = job["config"].get("reporting") in {"output", "cases"}
+                messages = (json.loads(event["payload"]) for event in output)
+                job["final_output"] = "".join(message["text"] for message in messages if not live or message.get("final") is True)
             node = db.execute("SELECT name,seen FROM nodes WHERE id=?", (job["node"],)).fetchone()
             job["node_name"] = node["name"] if node else None
+            if job["config"].get("runner") == "codex_app":
+                session = db.execute(
+                    "SELECT payload FROM events WHERE job=? AND kind='codex_session' ORDER BY id DESC LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+                if session:
+                    job["codex_thread_id"] = json.loads(session["payload"])["thread_id"]
             if node and job["state"] == "running" and node["seen"] < time.time() - HEARTBEAT_TIMEOUT:
                 job["state"] = "disconnected"
         job["screenshots"] = list(self.screenshots(job))
@@ -687,13 +721,31 @@ class Console:
             if db.execute("SELECT 1 FROM jobs WHERE node=? AND state IN ('running','review')", (node["id"],)).fetchone():
                 return {"job": None}
             profile = self.node(node)
+            codex_peers = None
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' AND (assigned IS NULL OR assigned=?) ORDER BY id", (node["id"],)):
                 config = json.loads(row["config"])
                 if not supported_job(profile, config):
                     continue
+                if config.get("runner") == "auto":
+                    runner = preferred_runner(profile)
+                    if runner == "claude" and row["assigned"] is None:
+                        if codex_peers is None:
+                            peers = db.execute("""SELECT * FROM nodes n WHERE n.id<>? AND n.root IS NOT NULL AND n.seen>=?
+                                AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.node=n.id AND j.state IN ('running','review'))""",
+                                (node["id"], time.time() - HEARTBEAT_TIMEOUT))
+                            codex_peers = [self.node(candidate) for candidate in peers
+                                           if not self.pending_update(db, candidate["id"], release)]
+                            codex_peers = [peer for peer in codex_peers if preferred_runner(peer) in {"codex_app", "codex"}]
+                        if any(supported_job(peer, config) for peer in codex_peers):
+                            continue
+                    config["runner"] = runner
+                    if config["method"] == "Unity" and config["server"] and any(
+                            check.get("label") == UNITY_RUNTIME_CHECK and check.get("acceptance_reporting") is True
+                            for check in profile["checks"]):
+                        config["reporting"] = "cases"
                 attempt = uuid.uuid4().hex
-                db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=? WHERE id=?",
-                           (node["id"], attempt, "节点已接单", time.time(), row["id"]))
+                db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=?,config=? WHERE id=?",
+                           (node["id"], attempt, "节点已接单", time.time(), packed(config), row["id"]))
                 job = self.job(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
                 return {"job": job, "root": node["root"], "features": ["ai_prompt"]}
         return {"job": None}
@@ -768,6 +820,11 @@ class Console:
             raise ApiError(400, "执行事件格式无效。")
         if kind == "ai_prompt" and (not isinstance(payload.get("text"), str) or not 0 < len(payload["text"]) <= 16000):
             raise ApiError(400, "AI 提示词片段格式无效。")
+        if kind == "codex_session":
+            thread = payload.get("thread_id")
+            if not isinstance(thread, str) or not CODEX_THREAD_ID.fullmatch(thread):
+                raise ApiError(400, "Codex 会话 ID 格式无效。")
+            payload = {"thread_id": thread}
         value = packed(payload)
         terminal = kind in {"execution_finished", "execution_stopped"}
         guard = self.pack_progress.lock if terminal else nullcontext()
@@ -788,6 +845,8 @@ class Console:
                 raise ApiError(409, "执行已关闭或事件序号不连续。")
             if terminal and db.execute("SELECT 1 FROM pack_claims WHERE job=?", (row["id"],)).fetchone():
                 raise ApiError(409, "批次还有未确认的进包表占用。")
+            if kind == "codex_session" and json.loads(row["config"]).get("runner") != "codex_app":
+                raise ApiError(409, "此批次未启用 Codex App 会话。")
             items = json.loads(row["items"])
             stage, state = row["stage"], row["state"]
             if kind == "stage_changed":
@@ -808,7 +867,8 @@ class Console:
             elif kind == "execution_error":
                 state, stage = "review", "执行待核对"
             elif kind == "execution_finished":
-                if payload.get("process_exited") is not True or any("result" not in item for item in items):
+                final_only = json.loads(row["config"]).get("final_output_only")
+                if payload.get("process_exited") is not True or not final_only and any("result" not in item for item in items):
                     raise ApiError(409, "需确认执行退出并为每项保存结果。")
                 state, stage = "done", "批次结束"
             elif kind == "execution_stopped":

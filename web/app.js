@@ -14,6 +14,7 @@ let stateReady = false;
 let pairings = [];
 let requestedPairing;
 let detailGeneration = 0;
+let detailReport = "final";
 let checklistSnapshot = "";
 const expandedCaseGroups = new Map();
 const logs = new Set();
@@ -124,11 +125,17 @@ function tick() {
   }
 }
 
+function reportMode(job) {
+  return job.config.final_output_only ? job.config.reporting || "final" : "cases";
+}
+
 function completion(job) {
+  if (reportMode(job) === "final") return null;
   if (job.items.length && job.items.every(item=>item.cases?.length)) {
     const cases = job.items.flatMap(item=>item.cases);
     return [cases.filter(test=>finishedCases.has(test.state)).length,cases.length,"用例"];
   }
+  if (job.config.final_output_only) return job.state === "done" ? [1,1,"批次"] : null;
   if (job.config.mode === "branch" && job.state === "running" && job.items.length === 1) return null;
   return [job.items.filter(item=>item.result).length,job.items.length,"事项"];
 }
@@ -162,7 +169,7 @@ function modeSummary(config) {
     : `分支验收 · ${config.branch} · ${config.source}`;
 }
 
-const runnerNames = {codex:"Codex CLI", claude:"Claude Code"};
+const runnerNames = {codex:"Codex CLI", codex_app:"Codex App", claude:"Claude Code"};
 
 function choices(select, options, placeholder) {
   const current = select.value;
@@ -221,17 +228,12 @@ async function findBranch() {
 }
 
 function nodeOptions() {
-  const filter = byId("platform").value;
-  const runner = byId("runner").value;
-  const selectedRunner = runnerNames[runner];
-  const nodes = view.nodes.filter(node => {
-    const check = node.checks.find(item => item.label === selectedRunner);
-    return (!filter || filter === node.os) && (check ? check.ok === true : runner === "claude");
-  });
+  const executors = Object.values(runnerNames);
+  const nodes = view.nodes.filter(node=>node.checks.some(check=>executors.includes(check.label) && check.ok === true));
   choices(byId("node"), nodes.map(node => [node.id,`${node.name} · ${node.os} · ${nodeStatus(node)}`]), "自动分配");
   const status = byId("runnerStatus");
   status.hidden = !stateReady || nodes.some(node=>node.online);
-  status.textContent = `当前没有在线的 ${selectedRunner} 节点，提交后将等待可用节点。`;
+  status.textContent = "当前没有在线且 AI 执行器就绪的节点，提交后将排队等待。";
 }
 
 function nodeStatus(node) {
@@ -392,7 +394,7 @@ function renderQueue(jobs) {
     const stage = document.createElement("div");
     const counts = completion(job);
     const description = document.createElement("span");
-    description.textContent = job.waiting || job.stage;
+    description.textContent = reportMode(job) === "final" ? "仅最终输出" : job.waiting || job.stage;
     stage.append(description);
     if (counts && job.state!=="queued") {
       const count = document.createElement("span");
@@ -401,7 +403,7 @@ function renderQueue(jobs) {
       stage.append(count);
     }
     phase.append(stage);
-    if (job.state!=="queued") {
+    if (reportMode(job) !== "final" && job.state!=="queued") {
       const progress = document.createElement("div");
       progress.className = "track";
       progress.setAttribute("role","progressbar");
@@ -431,7 +433,7 @@ function renderQueue(jobs) {
       if (results.length > 1) badge.append(" "+job.items.filter(item=>item.result===result).length);
       verdict.append(badge);
     }
-    if (!results.length) verdict.append(label("待出结果"));
+    if (!results.length) verdict.append(label(job.config.final_output_only ? "见 AI 输出" : "待出结果"));
     const operator = document.createElement("span");
     operator.className = "job-operator";
     operator.textContent = job.operator || "未记录";
@@ -676,6 +678,11 @@ async function refreshJob(id, generation) {
     set("context",[modeSummary(job.config),runnerNames[job.config.runner || "claude"],job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
+    const codexSession = byId("codexSession");
+    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.codex_thread_id || "")) {
+      codexSession.href = `codex://threads/${job.codex_thread_id}`;
+      codexSession.hidden = false;
+    }
     const stop = byId("detailStop");
     stop.hidden = !canStop(job);
     const stopState = String(Boolean(job.stop_requested));
@@ -685,6 +692,20 @@ async function refreshJob(id, generation) {
     }
     set("stage",job.state==="running" && job.stop_requested ? "正在停止，等待节点清理。" : job.stage || "等待节点接单");
     byId("closeReview").hidden = job.state !== "review";
+    const nextReport = reportMode(job);
+    if (nextReport !== detailReport && job.state === "running") setLogExpanded(true);
+    detailReport = nextReport;
+    renderDetailPanels();
+    byId("progressReport").hidden = detailReport === "final";
+    byId("runPanel").hidden = detailReport === "final" && job.state !== "review";
+    if (!byId("finalOutputPanel").hidden) {
+      const text = job.final_output || (job.state==="review" ? job.stage : job.state==="done" ? "本批次没有 AI 结论。" : "验收结束后显示结论。");
+      if (byId("finalOutputText").textContent !== text) set("finalOutputText",text);
+    }
+    if (detailReport === "final") {
+      tick();
+      return;
+    }
     const counts = completion(job);
     setProgress(byId("progress"),counts);
     set("progressCount",counts ? `${counts[0]} / ${counts[1]} ${counts[2]}` : "进度待确认");
@@ -694,13 +715,24 @@ async function refreshJob(id, generation) {
     set("summary", Object.entries(labels).filter(([key])=>outcomes.includes(key)).map(([key,name]) =>
       `${name} ${outcomes.filter(outcome=>outcome===key).length}`)
       .concat(job.config.writeback_enabled ? "进包表同步见执行记录" : "未回写").join(" · "));
-    renderChecklist(job);
+    if (detailReport === "cases") renderChecklist(job);
     tick();
   } catch(error) {
     if (generation !== detailGeneration) return;
     if (error.status===404) location.hash = "#dashboard";
     message(error.message);
   }
+}
+
+function renderDetailPanels() {
+  const hasLogs = detailReport === "output" || detailReport === "cases";
+  const compact = byId("summaryToggle").getAttribute("aria-pressed") === "true";
+  byId("summaryToggle").hidden = !hasLogs;
+  byId("logsPanel").hidden = !hasLogs || compact;
+  byId("checklist").hidden = detailReport !== "cases" || compact;
+  byId("finalOutputPanel").hidden = hasLogs;
+  document.querySelector(".detail-jump").hidden = !hasLogs || compact;
+  document.querySelector('[data-detail-jump="checklist"]').hidden = detailReport !== "cases";
 }
 
 function renderRoute(navigating = false) {
@@ -722,6 +754,11 @@ function renderRoute(navigating = false) {
   if (id === jobView) return;
   jobView = id;
   detailGeneration += 1;
+  detailReport = "final";
+  renderDetailPanels();
+  const codexSession = byId("codexSession");
+  codexSession.hidden = true;
+  codexSession.removeAttribute("href");
   const stop = byId("detailStop");
   stop.hidden = true;
   delete stop.dataset.requested;
@@ -753,6 +790,11 @@ function renderRoute(navigating = false) {
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
+    if (data.kind === "codex_session" || (live && ["execution_finished","case_snapshot"].includes(data.kind))) {
+      refreshJob(id,generation);
+    }
+    if (data.kind === "codex_session" || data.kind === "case_snapshot") return;
+    if (data.kind === "ai_output" && payload.final === true) return;
     if (data.kind === "ai_prompt") {
       promptText.append(document.createTextNode(payload.text));
       promptDetails.hidden = false;
@@ -778,7 +820,6 @@ function renderRoute(navigating = false) {
       ? payload.runtime
         ? `Unity 工程 ${payload.root}\n客户端提交 ${payload.versions.client.target}\n验收交接文件 ${payload.runtime.manifest}`
         : "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
-      : data.kind === "case_snapshot" ? payload.key+" · 已同步 "+payload.cases.length+" 条用例"
       : `${payload.key || ""} ${resultNames[payload.result] || ""}`.trim() || data.kind);
     if (isAI) {
       aiText = content;
@@ -888,8 +929,7 @@ byId("summaryToggle").addEventListener("click",event=>{
   const limited = button.getAttribute("aria-pressed")==="false";
   button.setAttribute("aria-pressed",String(limited));
   button.textContent = limited ? "显示全部详情" : "仅看进度";
-  byId("checklist").hidden = byId("logsPanel").hidden = limited;
-  document.querySelector(".detail-jump").hidden = limited;
+  renderDetailPanels();
   if (!limited) followLatest();
 });
 byId("followLog").addEventListener("change",followLatest);
@@ -939,6 +979,7 @@ byId("refresh").addEventListener("click",async event => {
 });
 action(form,async data => {
   const options = Object.fromEntries(data);
+  options.runner = "auto";
   options.auto_refresh_config = data.has("auto_refresh_config");
   options.auto_deploy = data.has("auto_deploy");
   if (options.mode==="branch" && !options.branch.trim()) {

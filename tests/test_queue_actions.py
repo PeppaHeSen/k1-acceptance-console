@@ -10,6 +10,71 @@ from worker import ExecutionStopped, Node, UNITY_RUNTIME_CAPABILITY, UNITY_RUNTI
 
 
 class QueueActionsTest(unittest.TestCase):
+    def test_automatic_executor_prefers_idle_codex_and_respects_worker_selection(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+
+            def enroll(name, checks):
+                created = console.create_node({"name": name, "os": "macOS"})
+                node = console.agent(created["id"], created["token"])
+                console.configure_node(node["id"], {"root": "/tmp/qa"})
+                console.heartbeat(node, {"root": "/tmp/qa", "os": "macOS",
+                                         "capabilities": ["Unity", UNITY_RUNTIME_CAPABILITY], "checks": [
+                                             {"label": UNITY_RUNTIME_CHECK, "ok": True, "servers": ["2903"],
+                                              "acceptance_reporting": True}, *checks]})
+                return node
+
+            claude = enroll("Claude", [{"label": "Claude Code", "ok": True}, {"label": "Codex CLI", "ok": False}])
+            codex = enroll("Codex", [{"label": "Codex App", "ok": True}, {"label": "Codex CLI", "ok": True}])
+            console.submit({"request": "verify-auto-executor-01", "mode": "branch", "source": "NK-1",
+                            "branch": "dev_NK-1", "method": "Unity", "server": "2903", "runner": "auto",
+                            "auto_refresh_config": False, "auto_deploy": False})
+            self.assertIsNone(console.claim(claude)["job"])
+            job = console.claim(codex)["job"]
+            self.assertEqual(job["config"]["runner"], "codex_app")
+            self.assertEqual(job["config"]["reporting"], "cases")
+            self.assertIn("case_progress", Node.unity_prompt({"source": "NK-1", "server": "2903"}, job["config"]))
+            console.submit({"request": "verify-auto-executor-02", "mode": "branch", "source": "NK-1",
+                            "branch": "dev_NK-1", "method": "Unity", "runner": "auto"})
+            self.assertEqual(console.claim(claude)["job"]["config"]["runner"], "claude")
+            self.assertIsNone(console.claim(codex)["job"])
+
+    def test_only_app_batches_expose_a_valid_saved_codex_session(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+            enrolled = console.create_node({"name": "Mac", "os": "macOS"})
+            node = console.agent(enrolled["id"], enrolled["token"])
+            console.configure_node(node["id"], {"root": "/tmp/qa"})
+            checks = [{"label": "Codex CLI", "ok": True}]
+            beat = {"root": "/tmp/qa", "os": "macOS", "capabilities": ["Unity"], "checks": checks}
+            console.heartbeat(node, beat)
+            beat["capabilities"].append(UNITY_RUNTIME_CAPABILITY)
+            checks.append({"label": UNITY_RUNTIME_CHECK, "ok": True, "servers": ["2903"]})
+            console.heartbeat(node, beat)
+            job_id = console.submit({"mode": "branch", "source": "NK-1", "branch": "dev_NK-1",
+                                     "method": "Unity", "runner": "codex_app", "request": "verify-app-session",
+                                     "server": "2903", "final_output_only": True})["id"]
+            self.assertIsNone(console.claim(node)["job"])
+            checks.append({"label": "Codex App", "ok": True})
+            console.heartbeat(node, beat)
+            job = console.claim(node)["job"]
+            self.assertEqual(job["id"], job_id)
+            self.assertNotIn("codex_thread_id", console.detail(job_id))
+            event = {"attempt": job["attempt"], "seq": 1, "kind": "codex_session"}
+            with self.assertRaisesRegex(ApiError, "会话 ID"):
+                console.event(node, {**event, "payload": {"thread_id": "new"}})
+            thread_id = "019b2acb-764a-7c54-8f32-fbaedd6ba073"
+            payload = {**event, "payload": {"thread_id": thread_id}}
+            self.assertEqual(console.event(node, payload), {"ack": 1})
+            self.assertEqual(console.event(node, payload), {"ack": 1})
+            self.assertEqual(console.detail(job_id)["codex_thread_id"], thread_id)
+            config = console.detail(job_id)["config"]
+            self.assertTrue(config["final_output_only"])
+            self.assertFalse(config["auto_deploy"])
+            final = Node.unity_prompt({"source": "NK-1", "server": "2903"}, config)
+            self.assertIn("功能验收", final)
+            self.assertIn("dev_NK-1", final)
+
     def test_jobs_only_route_to_the_requested_ai_runner(self):
         with TemporaryDirectory() as tmp:
             console = Console(Path(tmp) / "console.sqlite3", {}, None)
