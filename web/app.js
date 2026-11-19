@@ -678,11 +678,6 @@ async function refreshJob(id, generation) {
     set("context",[modeSummary(job.config),runnerNames[job.config.runner || "claude"],job.node_name || "等待节点",
       job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
-    const codexSession = byId("codexSession");
-    if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.codex_thread_id || "")) {
-      codexSession.href = `codex://threads/${job.codex_thread_id}`;
-      codexSession.hidden = false;
-    }
     const stop = byId("detailStop");
     stop.hidden = !canStop(job);
     const stopState = String(Boolean(job.stop_requested));
@@ -756,9 +751,6 @@ function renderRoute(navigating = false) {
   detailGeneration += 1;
   detailReport = "final";
   renderDetailPanels();
-  const codexSession = byId("codexSession");
-  codexSession.hidden = true;
-  codexSession.removeAttribute("href");
   const stop = byId("detailStop");
   stop.hidden = true;
   delete stop.dataset.requested;
@@ -790,7 +782,7 @@ function renderRoute(navigating = false) {
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
-    if (data.kind === "codex_session" || (live && ["execution_finished","case_snapshot"].includes(data.kind))) {
+    if (live && ["execution_finished","case_snapshot"].includes(data.kind)) {
       refreshJob(id,generation);
     }
     if (data.kind === "codex_session" || data.kind === "case_snapshot") return;
