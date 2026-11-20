@@ -29,12 +29,13 @@ PROJECT = Path(__file__).resolve().parent
 APPEARANCE_ASSETS = {
     "/styles.css": ("web/styles.css", "text/css"),
     "/appearance.js": ("web/appearance.js", "text/javascript"),
+    "/favicon.png": ("web/favicon.png", "image/png"),
 }
 DOCUMENT = "https://alidocs.dingtalk.com/i/nodes/mExel2BLV549Xda9IDEajDabWgk9rpMq"
 METHODS = {"Unity", "真机"}
 CAPABILITIES = METHODS | {UNITY_RUNTIME_CAPABILITY}
 EVENTS = {"execution_started", "stage_changed", "ai_output", "ai_prompt", "codex_session", "item_finished", "case_snapshot",
-          "execution_finished", "execution_error", "execution_stopped"}
+          "test_server_selection", "execution_finished", "execution_error", "execution_stopped"}
 RESULTS = {"pass", "fail", "blocked", "review", "error", "skipped"}
 HEARTBEAT_TIMEOUT = 30
 PAIRING_TIMEOUT = 5 * 60
@@ -67,20 +68,30 @@ def preferred_runner(node):
     return next((runner for runner in ("codex_app", "codex", "claude") if AI_RUNNERS[runner] in available), None)
 
 
+def runtime_servers(node, config):
+    if UNITY_RUNTIME_CAPABILITY not in node["capabilities"]:
+        return []
+    for check in node["checks"]:
+        servers = check.get("servers")
+        if (check.get("label") != UNITY_RUNTIME_CHECK or check.get("ok") is not True or not isinstance(servers, list)
+                or (config.get("auto_server") and check.get("automatic_test_server") is not True)
+                or (config.get("reporting", "final") != "final" and check.get("acceptance_reporting") is not True)
+                or (config.get("writeback_enabled") and check.get("pack_writeback") is not True)
+                or ((config.get("auto_refresh_config") or config.get("auto_deploy")) and check.get("batch_preparation") is not True)):
+            continue
+        return list(dict.fromkeys(server for server in servers
+                                  if isinstance(server, str) and re.fullmatch(r"[1-9][0-9]{0,9}", server)))
+    return []
+
+
 def supported_job(node, config):
     if config["method"] not in node["capabilities"] or config["os"] and config["os"] != node["os"]:
         return False
     if not supports_runner(node, config.get("runner", "claude")):
         return False
-    if config["method"] == "Unity" and config["server"]:
-        return UNITY_RUNTIME_CAPABILITY in node["capabilities"] and any(
-            check.get("label") == UNITY_RUNTIME_CHECK and check.get("ok") is True and
-            isinstance(check.get("servers"), list) and config["server"] in check["servers"] and
-            (config.get("reporting", "final") == "final" or check.get("acceptance_reporting") is True) and
-            (not config.get("writeback_enabled") or check.get("pack_writeback") is True) and
-            (not (config.get("auto_refresh_config") or config.get("auto_deploy")) or check.get("batch_preparation") is True)
-            for check in node["checks"]
-        )
+    if config["method"] == "Unity" and (config["server"] or config.get("auto_server")):
+        servers = runtime_servers(node, config)
+        return config["server"] in servers if config["server"] else bool(servers)
     return True
 
 
@@ -231,9 +242,12 @@ class Console:
                     runner = job["config"].get("runner", "claude")
                     job["waiting"] = "等待 AI 执行器就绪" if runner == "auto" else f"等待可用的 {AI_RUNNERS[runner]} 节点"
                 elif not any(node["online"] and supported_job(node, job["config"]) for node in peers):
-                    job["waiting"] = ("等待支持本批次配置的 Unity 自动实测节点"
-                                      if job["config"]["method"] == "Unity" and job["config"]["server"]
-                                      else "等待节点配置或依赖检查")
+                    if job["config"].get("auto_server"):
+                        job["waiting"] = "等待支持自动选服且已登记可用测试服的 Unity 节点"
+                    elif job["config"]["method"] == "Unity" and job["config"]["server"]:
+                        job["waiting"] = "等待支持本批次配置的 Unity 自动实测节点"
+                    else:
+                        job["waiting"] = "等待节点配置或依赖检查"
                 else:
                     job["waiting"] = "等待空闲节点接单"
             elif job["state"] == "running" and not any(n["id"] == job["node"] and n["online"] for n in nodes):
@@ -538,7 +552,9 @@ class Console:
             raise ApiError(400, "请选择有效的测试方式和平台。")
         if config["method"] == "Unity" and config["server"] and not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
             raise ApiError(400, "请填写有效的测试服 ID。")
-        can_writeback = config["mode"] == "version" and config["method"] == "Unity" and bool(config["server"])
+        if config["method"] == "Unity" and not config["server"]:
+            config["auto_server"] = True
+        can_writeback = config["mode"] == "version" and config["method"] == "Unity"
         final_only = body.get("final_output_only", False)
         if type(final_only) is not bool or final_only and (
                 config["method"] != "Unity" or not config["server"] or runner != "codex_app"):
@@ -596,8 +612,10 @@ class Console:
                 if not supports_runner(node, runner):
                     label = AI_RUNNERS.get(runner, "Codex 或 Claude Code")
                     raise ApiError(422, f"指定节点尚未就绪：{label}。")
-                if (config["method"] == "Unity" and config["server"] and not supported_job(node, config)):
-                    raise ApiError(422, "指定节点暂不支持该测试服或所选环境准备选项的 Unity 自动实测。")
+                if config["method"] == "Unity" and not supported_job(node, config):
+                    reason = ("指定节点未就绪，需支持自动选服并登记可用测试服。" if config.get("auto_server") else
+                              "指定节点暂不支持该测试服或所选环境准备选项的 Unity 自动实测。")
+                    raise ApiError(422, reason)
             job = db.execute("""INSERT INTO jobs(id,request,request_body,config,items,created,assigned,operator)
                 SELECT MAX(COALESCE((SELECT MAX(id) FROM jobs),0),
                            COALESCE((SELECT MAX(id) FROM retired_jobs),0))+1,?,?,?,?,?,?,?""",
@@ -739,10 +757,12 @@ class Console:
                         if any(supported_job(peer, config) for peer in codex_peers):
                             continue
                     config["runner"] = runner
-                    if config["method"] == "Unity" and config["server"] and any(
+                    if config["method"] == "Unity" and (config["server"] or config.get("auto_server")) and any(
                             check.get("label") == UNITY_RUNTIME_CHECK and check.get("acceptance_reporting") is True
                             for check in profile["checks"]):
                         config["reporting"] = "cases"
+                if config.get("auto_server"):
+                    config["server_candidates"] = runtime_servers(profile, config)
                 attempt = uuid.uuid4().hex
                 db.execute("UPDATE jobs SET node=?,attempt=?,state='running',stage=?,started=?,config=? WHERE id=?",
                            (node["id"], attempt, "节点已接单", time.time(), packed(config), row["id"]))
@@ -848,9 +868,18 @@ class Console:
             if kind == "codex_session" and json.loads(row["config"]).get("runner") != "codex_app":
                 raise ApiError(409, "此批次未启用 Codex App 会话。")
             items = json.loads(row["items"])
+            config = json.loads(row["config"])
             stage, state = row["stage"], row["state"]
             if kind == "stage_changed":
                 stage = bounded(payload, "text", 200)
+            elif kind == "test_server_selection":
+                selected = bounded(payload, "server", 10)
+                reason = bounded(payload, "reason", 400)
+                if not config.get("auto_server") or not reason or (selected and selected not in config["server_candidates"]):
+                    raise ApiError(409, "该测试服选择不属于本次自动选服批次。")
+                config["resolved_server"] = selected
+                config["server_selection_reason"] = reason
+                stage = (f"AI 已选定 {selected} 服" if selected else "未找到可用测试服") + f" · {reason[:160]}"
             elif kind == "item_finished":
                 item = next((it for it in items if it["key"] == payload.get("key")), None)
                 if not item or "result" in item or payload.get("result") not in RESULTS or not payload.get("evidence"):
@@ -877,8 +906,8 @@ class Console:
                 state, stage = "done", "已停止"
             db.execute("INSERT INTO events(job,attempt,seq,kind,payload,created) VALUES (?,?,?,?,?,?)",
                        (row["id"], attempt, seq, kind, value, time.time()))
-            db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=?,ended=? WHERE id=?",
-                       (seq, packed(items), stage, state, time.time() if state=="done" else None, row["id"]))
+            db.execute("UPDATE jobs SET last_seq=?,items=?,stage=?,state=?,ended=?,config=? WHERE id=?",
+                       (seq, packed(items), stage, state, time.time() if state=="done" else None, packed(config), row["id"]))
             if state == "done":
                 self.prune_completed(db, self.completed_limit(db))
             return {"ack": seq}
@@ -1028,10 +1057,15 @@ class Handler(BaseHTTPRequestHandler):
                 "/": ("web/index.html", "text/html"), "/app.js": ("web/app.js", "text/javascript"),
                 "/demo": ("public/index.html", "text/html"), **APPEARANCE_ASSETS,
             }[path]
-            data = (PROJECT / file).read_bytes()
+            try:
+                data = (PROJECT / file).read_bytes()
+            except FileNotFoundError as error:
+                if path == "/favicon.png":
+                    raise ApiError(404, "站点图标未配置。") from error
+                raise
             if path == "/":
                 data = data.replace(b"__K1_VERSION__", (PROJECT / "VERSION").read_bytes().strip())
-            self.respond(200, data, kind + "; charset=utf-8")
+            self.respond(200, data, kind + "; charset=utf-8" if kind.startswith("text/") else kind)
         else:
             raise ApiError(404, "页面不存在。")
 

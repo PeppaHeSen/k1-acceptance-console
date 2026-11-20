@@ -38,7 +38,7 @@ FINAL_ONLY_EXCLUDED_TOOLS = {"register_cases", "report_item_blocked", "case_prog
 REPORTING_MODES = ("final", "progress", "output", "cases")
 CODEX_THREAD_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 BATCH_PREPARATION = {"refresh_config": "auto_refresh_config", "deploy_server": "auto_deploy"}
-WORKER_VERSION = "0.14.18"
+WORKER_VERSION = "0.14.19"
 FUNCTION_REVIEW_RUNTIME = (
     "review-k1-function/SKILL.md",
     "review-k1-function/references/runtime-acceptance.md",
@@ -354,8 +354,8 @@ TOOLS = {
                           {}, []),
     "environment_options": ("查看批次自动准备开关、该测试服可用动作及环境身份。按 FunctionReview 选择。",
                             {}, []),
-    "available_test_roles": ("查看目标服在客户端中的在线状态、当前身份、正常可用角色和登录界面。roles_ready 为 false 时角色列表仍未加载。",
-                             {}, []),
+    "available_test_roles": ("查看目标服在线状态、当前身份和可用角色。自动选服时可传候选服号。roles_ready 为 false 时列表仍未加载。",
+                             {"server": {"type": "integer"}}, []),
     "login_view": ("查看 Unity 登录、选服或创角界面的截图，登录前也可使用。",
                    {}, []),
     "restart_test_play": ("首次登录界面长时间未就绪或提示登录错误时，允许重新进入 Play 一次并重新查角色。",
@@ -394,6 +394,12 @@ TOOLS = {
                       {"item": {"type": "string"}, "case": {"type": "string"},
                        "state": {"enum": ["running", "pass", "fail", "blocked", "confirm", "defer"]},
                        "observation": {"type": "string"}}, ["item", "case", "state"]),
+}
+
+SERVER_SELECTION_TOOLS = {
+    "choose_test_server": ("根据 FunctionReview 和实际环境，从 environment_options 的候选服选择测试服。"
+                           "用 available_test_roles 核对候选。全部不适用时省略 server，说明检查结果和具体原因。",
+                           {"server": {"type": "integer"}, "reason": {"type": "string", "maxLength": 400}}, ["reason"]),
 }
 
 SKILL_TOOLS = {
@@ -725,7 +731,14 @@ class UnityTools:
         self.run = manifest_path.parent
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.bridge = UnityBridge(self.manifest)
-        self.server = int(self.manifest["server"])
+        self.server_candidates = self.manifest.get("server_candidates", [])
+        self.selection_path = self.run / "test-server.json"
+        self.selection = {}
+        if self.server_candidates and self.selection_path.is_file():
+            self.selection = json.loads(self.selection_path.read_bytes())
+            self.manifest["server"] = self.selection["server"]
+            self.manifest["acceptance_scope"]["server"] = self.selection["server"]
+        self.server = int(self.manifest["server"]) if self.manifest["server"] else None
         self.player = self.manifest.get("test_player")
         self.actions = self.manifest.get("environment_actions", {})
         self.visible = set()
@@ -740,7 +753,7 @@ class UnityTools:
         self.pack_call = pack_call
         self.pack_owned = set()
         self.final_only = self.manifest.get("final_output_only") is True
-        self.wait_for_editor = self.final_only or self.manifest.get("reporting") == "cases"
+        self.wait_for_editor = self.final_only or bool(self.server_candidates) or self.manifest.get("reporting") == "cases"
         self.flexible_actions = self.wait_for_editor and not self.manifest.get("acceptance_scope", {}).get("writeback")
 
     @property
@@ -782,15 +795,60 @@ class UnityTools:
         return result
 
     def environment_options(self):
-        return {"current": {"server": self.server, "player": self.player},
-                "batch_preparation": self.manifest.get("acceptance_scope", {}).get("batch_preparation", {}),
-                "unity_gm": {"help": "test_gm_help", "tool": "run_test_gm", "server": int(self.manifest["server"])},
-                "actions": {name: {key: action[key] for key in ("kind", "server", "player", "description", "parameters")
-                                   if key in action}
-                            for name, action in self.actions.items()}}
+        options = {"current": {"server": self.server, "player": self.player},
+                   "batch_preparation": self.manifest.get("acceptance_scope", {}).get("batch_preparation", {}),
+                   "unity_gm": {"help": "test_gm_help", "tool": "run_test_gm",
+                                "server": int(self.manifest["server"]) if self.manifest["server"] else None},
+                   "actions": {name: {key: action[key] for key in ("kind", "server", "player", "description", "parameters")
+                                      if key in action}
+                               for name, action in self.actions.items()
+                               if not self.server_candidates or not self.server or action["server"] == self.server}}
+        if self.server_candidates:
+            options["test_server_candidates"] = [int(server) for server in self.server_candidates]
+        return options
+
+    def target_server(self):
+        if not self.manifest["server"]:
+            raise ValueError("请先核对候选服并用 choose_test_server 选定本批次测试服。")
+        return int(self.manifest["server"])
+
+    def lock_test_server(self):
+        if self.selection and not self.selection.get("locked"):
+            self.selection["locked"] = True
+            save_json(self.selection_path, self.selection)
+
+    def choose_test_server(self, args):
+        server, reason = args.get("server"), args.get("reason")
+        if not self.server_candidates:
+            raise ValueError("本批次已指定测试服。")
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 400:
+            raise ValueError("请填写选服依据，或各候选服不可用的具体原因。")
+        if server is not None and (type(server) is not int or str(server) not in self.server_candidates):
+            raise ValueError("请从当前节点已启用的候选测试服中选择。")
+        selected = str(server) if server is not None else ""
+        if self.selection.get("locked"):
+            if selected == self.selection["server"]:
+                return self.selection
+            raise ValueError("已在选定测试服登录或开始准备，不能切换本批次的目标服。")
+        if server is not None:
+            deployable = any(action["kind"] == "deploy_server" and action["server"] == server for action in self.actions.values())
+            if not deployable:
+                state = self.available_test_roles(server)
+                if not ((state.get("in_game") and state.get("current_server") == server) or
+                        (state.get("roles_ready") and state.get("server_online"))):
+                    detail = "登录列表尚未就绪" if not state.get("roles_ready") else (
+                        "客户端列表没有该服" if not state.get("server_listed") else "该服当前离线")
+                    raise ValueError(f"{server} 服无法确认可用：{detail}。")
+        self.selection = {"server": selected, "reason": reason.strip()}
+        save_json(self.selection_path, self.selection)
+        self.manifest["server"] = selected
+        self.manifest["acceptance_scope"]["server"] = selected
+        self.server, self.player, self.role_login, self.role_creation = server, None, None, None
+        self.invalidate_observation()
+        return self.selection
 
     def test_gm_guard(self):
-        if self.server != int(self.manifest["server"]) or type(self.player) is not int or self.player <= 0:
+        if self.server != self.target_server() or type(self.player) is not int or self.player <= 0:
             raise ValueError("请先登录本批次测试服并核对实际角色，再使用 GM。")
         return GM_GUARD.replace("__PLAYER__", str(self.player)).replace("__SERVER__", str(self.server))
 
@@ -921,7 +979,7 @@ return "sent";
         raise RuntimeError("Unity 未退出 Play，无法重登。")
 
     def available_test_roles(self, server=None):
-        server = int(self.manifest["server"]) if server is None else server
+        server = self.target_server() if server is None else server
         state = self.bridge.code(LOGIN_ROLES.replace("__SERVER__", str(server)))
         if not isinstance(state, dict):
             return {"server": server, "status": "loading", "roles_ready": False, "players": []}
@@ -932,19 +990,22 @@ return "sent";
                 "current": {"server": state["current_server"], "player": state["current_player"]}}
 
     def create_test_role(self):
-        server = int(self.manifest["server"])
+        server = self.target_server()
         code = (CREATE_TEST_ROLE.replace("__SERVER__", str(server))
                 .replace("__REQUESTED__", str(self.role_creation == "confirmation_pending").lower())
                 .replace("__SUBMITTED__", str(self.role_creation == "submitted").lower()))
         state = self.bridge.code(code)
         if state["status"] in {"confirmation_pending", "submitted"} and self.role_creation != state["status"]:
             self.role_creation = state["status"]
+            if self.role_creation == "submitted":
+                self.lock_test_server()
             message = "已打开测试服创角确认" if self.role_creation == "confirmation_pending" else "已确认创建测试角色"
             self.environment_event(f"{server} 服 · {message}")
         elif state["status"] == "logged_in":
             player = state.get("player")
             if state.get("server") != server or type(player) is not int or player <= 0:
                 raise RuntimeError("无法核对创角后的实际测试身份。")
+            self.lock_test_server()
             if (self.server, self.player) != (server, player):
                 self.invalidate_observation()
                 self.server, self.player = server, player
@@ -953,11 +1014,12 @@ return "sent";
         return state
 
     def select_test_role(self, args):
+        target = self.target_server()
         server, player = args.get("server", self.server), args.get("player", self.player)
         if type(server) is not int or type(player) is not int or player <= 0:
             raise ValueError("请指定可用的测试服及角色 ID。")
         previous = self.server, self.player
-        if server != int(self.manifest["server"]) and not any(
+        if server != target and not any(
                 (action["server"], action["player"]) == (server, player) for action in self.actions.values()):
             raise ValueError("登录范围为批次目标服及已授权环境动作的身份。")
         if (server, player) != previous and player not in self.available_test_roles(server)["players"]:
@@ -976,6 +1038,7 @@ return "sent";
                 except ConnectionError:
                     status = "loading"
                 if status == "logged_in":
+                    self.lock_test_server()
                     self.environment_event(f"身份已验证 · {server} 服角色 {player}")
                     return {"status": status, "server": server, "player": player}
                 if status not in {"loading", "selected", "confirmed", "restarting_play"}:
@@ -990,6 +1053,8 @@ return "sent";
 
     def prepare_environment(self, name, reason, parameters):
         action = self.actions.get(name)
+        if self.server_candidates and action and action["server"] != self.target_server():
+            raise ValueError("环境准备仅适用于当前选定的测试服。")
         if action is None or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 200:
             raise ValueError("请选择已配置的环境动作，并填写 1 至 200 字的准备原因。")
         flag = BATCH_PREPARATION.get(action["kind"])
@@ -1016,6 +1081,7 @@ return "sent";
                 self.bridge.code(self.guard + "return true;") is not True):
             raise ValueError("请先登录该环境动作绑定的测试服和角色。")
         self.invalidate_observation()
+        self.lock_test_server()
         self.environment_event(f"准备环境 · {name} · {server} 服 · {reason}", phase="批次环境准备")
         item, case = self.active or (None, None)
         context = {"batch": self.manifest["batch"], "attempt": self.manifest["attempt"], "action": name,
@@ -1231,7 +1297,13 @@ return "sent";
         if name == "run_test_gm":
             return self.run_test_gm(args)
         if name == "available_test_roles":
-            return self.available_test_roles()
+            server = args.get("server")
+            allowed = self.server_candidates or [self.manifest["server"]]
+            if server is not None and (type(server) is not int or str(server) not in allowed):
+                raise ValueError("请核对本批次指定或节点已启用的候选测试服。")
+            return self.available_test_roles(server)
+        if name == "choose_test_server":
+            return self.choose_test_server(args)
         if name == "login_view":
             return self.capture_view(login=True)
         if name == "select_test_role":
@@ -1473,6 +1545,8 @@ def serve_unity_tools(manifest, planning=False):
         available.update({name: schema for name, schema in TOOLS.items()
                           if not tools.final_only or context.get("reporting") == "cases"
                           or name not in FINAL_ONLY_EXCLUDED_TOOLS})
+        if tools.server_candidates:
+            available.update(SERVER_SELECTION_TOOLS)
     if pack_call:
         available.update(PACK_TOOLS)
     profile = {"function_review_revision": context.get("function_review", {}).get("revision"),
@@ -1878,7 +1952,7 @@ class Node:
                                         "detail": detail or "已配置测试服 " + "、".join(servers),
                                         "servers": servers if detail is None else [],
                                         "batch_preparation": detail is None, "pack_writeback": detail is None,
-                                        "acceptance_reporting": detail is None})
+                                        "acceptance_reporting": detail is None, "automatic_test_server": detail is None})
                     if detail is None:
                         self.caps.append(UNITY_RUNTIME_CAPABILITY)
                 else:
@@ -2041,6 +2115,8 @@ class Node:
             return {}, {}, None
         mcp = {"command": sys.executable, "args": [str(Path(__file__).resolve()), "--unity-tools", str(manifest)]}
         names = {**SKILL_TOOLS, **TOOLS}
+        if self.attempt.get("auto_server"):
+            names.update(SERVER_SELECTION_TOOLS)
         if self.attempt.get("final_output_only") and self.attempt.get("reporting") != "cases":
             for name in FINAL_ONLY_EXCLUDED_TOOLS:
                 names.pop(name)
@@ -2069,7 +2145,8 @@ class Node:
             argv = json.dumps(mcp["args"], ensure_ascii=False)
             variables = '["K1_CONSOLE_PACK_SESSION"]' if env else "[]"
             # Only the Worker-managed tool allowlist is approved for unattended calls.
-            flexible_run = self.attempt.get("final_output_only") or self.attempt.get("reporting") == "cases"
+            flexible_run = (self.attempt.get("final_output_only") or self.attempt.get("auto_server")
+                            or self.attempt.get("reporting") == "cases")
             timeout = EDITOR_BOOT_WAIT + 60 if flexible_run else 240
             server = (f'{{k1_unity={{command={cmd},args={argv},env_vars={variables},default_tools_approval_mode="approve",'
                       f"enabled_tools={json.dumps(list(names))},required=true,tool_timeout_sec={timeout}" "}}")
@@ -2219,16 +2296,22 @@ class Node:
         self.attempt = {"id": job["attempt"], "job": job["id"], "seq": 0, "pending": [],
                         "runner": job["config"].get("runner", "claude"),
                         "final_output_only": job["config"].get("final_output_only") is True,
-                        "reporting": job["config"].get("reporting", "final"),
+                      "reporting": job["config"].get("reporting", "final"),
+                      "auto_server": job["config"].get("auto_server") is True,
                         "record_prompt": "ai_prompt" in claim.get("features", []),
                         "pack_writeback": job["config"].get("writeback_enabled") is True}
         self.persist()
         try:
             self.check_stopped()
             config = job["config"]
-            if config["method"] == "Unity" and config["server"]:
-                if UNITY_RUNTIME_CAPABILITY not in self.caps or config["server"] not in test_servers(self.config):
+            if config["method"] == "Unity" and (config["server"] or config.get("auto_server")):
+                configured = test_servers(self.config)
+                if UNITY_RUNTIME_CAPABILITY not in self.caps or (config["server"] and config["server"] not in configured):
                     raise RuntimeError("该节点没有为指定测试服启用 Unity 自动实测。")
+                if config.get("auto_server"):
+                    config["server_candidates"] = [server for server in config.get("server_candidates", []) if server in configured]
+                    if not config["server_candidates"]:
+                        raise RuntimeError("没有可尝试的测试服：接单时的候选服已从节点配置移除。")
                 self.execute_unity(job, Path(root))
                 return
             self.event("stage_changed", text="正在核对技能与三端 Git 版本")
@@ -2289,7 +2372,7 @@ class Node:
 
     def execute_unity(self, job, root):
         config = job["config"]
-        if not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
+        if not config.get("auto_server") and not re.fullmatch(r"[1-9][0-9]{0,9}", config["server"]):
             raise RuntimeError("请填写有效的测试服 ID。")
         ref = config["refs"]["client"]
         snapshot = self.prepare_function_review()
@@ -2381,7 +2464,10 @@ class Node:
         manifest["final_output_only"] = final_only
         reporting = config.get("reporting", "final")
         manifest["reporting"] = reporting
-        auto = attached is not None or config["server"] in test_servers(self.config)
+        candidates = config.get("server_candidates", []) if config.get("auto_server") else []
+        if candidates:
+            manifest["server_candidates"] = candidates
+        auto = attached is not None or bool(candidates) or config["server"] in test_servers(self.config)
         preparation = {flag: config.get(flag) is True for flag in BATCH_PREPARATION.values()}
         if auto:
             actions = {}
@@ -2395,7 +2481,9 @@ class Node:
                 parameters = action.get("parameters", {})
                 seconds = 90 if seconds is None else seconds
                 flag = BATCH_PREPARATION.get(kind) if isinstance(kind, str) else None
-                if flag and (not preparation[flag] or server != int(config["server"])):
+                if candidates and str(server) not in candidates:
+                    continue
+                if flag and (not preparation[flag] or not candidates and server != int(config["server"])):
                     continue
                 if flag:
                     player = None
@@ -2487,8 +2575,37 @@ class Node:
             self.attempt["pid"] = launch.pid
             self.persist()
 
+        server_choice = {}
+
+        def poll_server_choice():
+            nonlocal server_choice
+            path = run / "test-server.json"
+            if not candidates or not path.is_file():
+                return
+            choice = json.loads(path.read_bytes())
+            server, reason = choice["server"], choice["reason"]
+            if server and server not in candidates:
+                raise RuntimeError("自动选服回执中包含未启用的测试服。")
+            receipt = {"server": server, "reason": reason}
+            if receipt != server_choice:
+                server_choice = receipt
+                manifest["server"] = config["server"] = server
+                manifest["acceptance_scope"]["server"] = server
+                self.event("test_server_selection", **receipt)
+
+        def finish_cases(reason):
+            poll_server_choice()
+            if candidates and not manifest["server"]:
+                if server_choice:
+                    reason = server_choice["reason"]
+                else:
+                    reason = f"AI 未确认可用测试服（候选：{'、'.join(candidates)}）。{reason}"[:400]
+                    self.event("test_server_selection", server="", reason=reason)
+            self.finish_auto_cases(manifest, run, reason)
+
         def sync_runtime():
             self.check_stopped()
+            poll_server_choice()
             request = run / "unity-start.json"
             if attached is None and launch is None and request.is_file():
                 if json.loads(request.read_bytes())["status"] == "requested":
@@ -2509,16 +2626,17 @@ class Node:
                 try:
                     self.check_stopped()
                     editor_status = " · 复用已打开的 Unity" if attached else ""
-                    self.event("stage_changed", text=f"验收 AI 接手 {config['server']} 服实测{editor_status}")
+                    scope = "核对候选测试服" if candidates else f"接手 {config['server']} 服实测"
+                    self.event("stage_changed", text=f"验收 AI {scope}{editor_status}")
                     self.auto_acceptance(bridge, manifest_path, sync_runtime, prompt)
                     if not final_only:
-                        self.finish_auto_cases(manifest, run, "Agent 未提交该用例的结论。")
+                        finish_cases("Agent 未提交该用例的结论。")
                 except (OSError, RuntimeError, ValueError) as error:
                     if final_only:
                         raise
                     self.check_stopped()
                     self.event("stage_changed", text=str(error)[:200])
-                    self.finish_auto_cases(manifest, run, str(error)[:450])
+                    finish_cases(str(error)[:450])
                 upload_cases()
             finally:
                 if launch is not None:
@@ -2545,21 +2663,27 @@ class Node:
     @staticmethod
     def unity_prompt(manifest, config):
         reporting = config.get("reporting", "final")
-        if config.get("final_output_only") or reporting == "cases":
+        if config.get("final_output_only") or config.get("auto_server") or reporting == "cases":
             target = (f"{config['sheet_name']} 版本日验收" if config["mode"] == "version"
                       else f"{manifest['source']} 的功能验收，客户端分支 {config['refs']['client']}")
             updates = "在关键操作后简短说明已观察到的结果。" if reporting in {"output", "cases"} else ""
-            if reporting == "cases":
+            if reporting == "cases" or config.get("auto_server"):
                 updates += ("按 FunctionReview 逐项用 register_cases 登记用例，并用 case_progress 边测边更新状态和证据。"
                             "某事项无法登记时用 report_item_blocked 写明原因，继续其他事项。")
             preparation = "按 environment_options 的开关准备环境。" if (
                 config.get("auto_refresh_config") or config.get("auto_deploy")) else ""
             writeback = "用 pack_item 开测前占用事项，跳过别人已占用的事项，验完立即回写。" if config.get("writeback_enabled") else ""
+            server = f"进 {manifest['server']} 服，账号自行决定。"
+            if config.get("auto_server"):
+                server = ("本轮由你按 FunctionReview 选测试服。用 environment_options 查候选和环境动作；"
+                          "可先启动 Unity 进入 Play，用 available_test_roles 逐个核对候选服是否在线及有无可用角色。"
+                          "结合任务所需服务端和配表，调用 choose_test_server 提交选定服与依据，然后登录或创角并实测。"
+                          "全部不适用时调用 choose_test_server 省略 server，说明每个候选的具体原因。")
             return (
-                f"按 FunctionReview 做 {target}。进 {manifest['server']} 服，账号自行决定。"
+                f"按 FunctionReview 做 {target}。"
                 "用 read_function_review 读取技能，用 batch_context 查看事项。"
                 "用 acceptance_profile 确认本轮技能提交与 Unity 工具集。"
-                f"{preparation}{writeback}"
+                f"{server}{preparation}{writeback}"
                 "启动 Unity 后用 editor_status 等编辑器就绪。"
                 "需要点地图实体或界面控件未响应时，用 capture_view 和 click_game 操作并核对画面。"
                 "动态效果用 record_view 连续取证，动作后用 sample_recording 核对相关帧。"

@@ -21,7 +21,8 @@ class QueueActionsTest(unittest.TestCase):
                 console.heartbeat(node, {"root": "/tmp/qa", "os": "macOS",
                                          "capabilities": ["Unity", UNITY_RUNTIME_CAPABILITY], "checks": [
                                              {"label": UNITY_RUNTIME_CHECK, "ok": True, "servers": ["2903"],
-                                              "acceptance_reporting": True}, *checks]})
+                                              "acceptance_reporting": True, "automatic_test_server": True,
+                                              "batch_preparation": True}, *checks]})
                 return node
 
             claude = enroll("Claude", [{"label": "Claude Code", "ok": True}, {"label": "Codex CLI", "ok": False}])
@@ -36,7 +37,9 @@ class QueueActionsTest(unittest.TestCase):
             self.assertIn("case_progress", Node.unity_prompt({"source": "NK-1", "server": "2903"}, job["config"]))
             console.submit({"request": "verify-auto-executor-02", "mode": "branch", "source": "NK-1",
                             "branch": "dev_NK-1", "method": "Unity", "runner": "auto"})
-            self.assertEqual(console.claim(claude)["job"]["config"]["runner"], "claude")
+            auto = console.claim(claude)["job"]
+            self.assertEqual(auto["config"]["runner"], "claude")
+            self.assertEqual(auto["config"]["server_candidates"], ["2903"])
             self.assertIsNone(console.claim(codex)["job"])
 
     def test_only_app_batches_expose_a_valid_saved_codex_session(self):
@@ -86,11 +89,11 @@ class QueueActionsTest(unittest.TestCase):
                 enrolled = console.create_node({"name": name, "os": "Windows"})
                 node = console.agent(enrolled["id"], enrolled["token"])
                 console.configure_node(node["id"], {"root": "C:/QA"})
-                console.heartbeat(node, {"root": "C:/QA", "os": "Windows", "capabilities": ["Unity"], "checks": checks})
+                console.heartbeat(node, {"root": "C:/QA", "os": "Windows", "capabilities": ["真机"], "checks": checks})
                 nodes.append(node)
             claude, codex = nodes
             request = {"mode": "branch", "source": "NK-9705", "branch": "dev_NK-9705",
-                       "method": "Unity", "runner": "codex", "request": "verify-codex-routing"}
+                       "method": "真机", "runner": "codex", "request": "verify-codex-routing"}
             with self.assertRaisesRegex(ApiError, "Codex CLI"):
                 console.submit({**request, "node": claude["id"]})
             with self.assertRaisesRegex(ApiError, "AI 执行器"):
@@ -167,16 +170,44 @@ class QueueActionsTest(unittest.TestCase):
                                       "request": "verify-linked-branch-0001"})
             self.assertEqual(console.detail(job["id"])["config"]["branch"], "feature-combat")
 
+    def test_auto_server_claim_only_on_compatible_worker_and_keeps_request_unchanged(self):
+        with TemporaryDirectory() as tmp:
+            console = Console(Path(tmp) / "console.sqlite3", {}, None)
+            enrolled = console.create_node({"name": "Mac", "os": "macOS"})
+            node = console.agent(enrolled["id"], enrolled["token"])
+            console.configure_node(node["id"], {"root": "/tmp/qa"})
+            runtime = {"label": UNITY_RUNTIME_CHECK, "ok": True, "servers": ["2903", "3020"]}
+            heartbeat = {"root": "/tmp/qa", "os": "macOS", "capabilities": ["Unity", UNITY_RUNTIME_CAPABILITY],
+                         "checks": [runtime]}
+            console.heartbeat(node, heartbeat)
+            request = {"mode": "branch", "method": "Unity", "branch": "dev_NK-1", "source": "NK-1",
+                       "request": "verify-auto-server-routing", "auto_deploy": False, "auto_refresh_config": False}
+            job_id = console.submit(request)["id"]
+            self.assertIsNone(console.claim(node)["job"])
+            self.assertIn("自动选服", console.state()["jobs"][0]["waiting"])
+            with self.assertRaisesRegex(ApiError, "自动选服"):
+                console.submit({**request, "request": "verify-auto-server-assigned", "node": node["id"]})
+            runtime["automatic_test_server"] = True
+            console.heartbeat(node, heartbeat)
+            job = console.claim(node)["job"]
+            self.assertEqual(job["config"]["server_candidates"], ["2903", "3020"])
+            event = {"attempt": job["attempt"], "seq": 1, "kind": "test_server_selection"}
+            with self.assertRaises(ApiError):
+                console.event(node, {**event, "payload": {"server": "7654", "reason": "未登记的候选"}})
+            console.event(node, {**event, "payload": {"server": "3020", "reason": "符合配置"}})
+            cfg = console.detail(job_id)["config"]
+            self.assertEqual((cfg["server"], cfg["resolved_server"], cfg["server_selection_reason"]), ("", "3020", "符合配置"))
+
     def test_queued_delete_and_running_stop_have_distinct_transitions(self):
         with TemporaryDirectory() as tmp:
             console = Console(Path(tmp) / "console.sqlite3", {}, None)
             enrolled = console.create_node({"name": "QA", "os": "Windows"})
             node = console.agent(enrolled["id"], enrolled["token"])
             console.configure_node(node["id"], {"root": "C:/QA"})
-            beat = {"root": "C:/QA", "os": "Windows", "capabilities": ["Unity"], "checks": [],
+            beat = {"root": "C:/QA", "os": "Windows", "capabilities": ["真机"], "checks": [],
                     "stop_supported": True}
             console.heartbeat(node, beat)
-            request = {"mode": "branch", "source": "NK-9705", "branch": "feature-combat", "method": "Unity",
+            request = {"mode": "branch", "source": "NK-9705", "branch": "feature-combat", "method": "真机",
                        "request": "verify-queue-actions-0001"}
             deleted = console.submit(request)["id"]
             self.assertEqual(console.change_queue(deleted, "delete"), {"deleted": True})

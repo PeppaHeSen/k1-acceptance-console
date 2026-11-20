@@ -13,11 +13,11 @@ class RetentionTest(unittest.TestCase):
             enrollment = console.create_node({"name": "QA", "os": "Windows"})
             node = console.agent(enrollment["id"], enrollment["token"])
             console.configure_node(node["id"], {"root": "C:/QA"})
-            console.heartbeat(node, {"root": "C:/QA", "os": "Windows", "capabilities": ["Unity"], "checks": []})
+            console.heartbeat(node, {"root": "C:/QA", "os": "Windows", "capabilities": ["真机"], "checks": []})
 
             def request(number):
                 return {"request": f"retention-example-{number}", "mode": "branch",
-                        "branch": "dev_NK-9705", "source": "NK-9705", "method": "Unity"}
+                        "branch": "dev_NK-9705", "source": "NK-9705", "method": "真机"}
 
             def finish(claim):
                 item = {"attempt": claim["attempt"], "seq": 1, "kind": "item_finished",

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="k1-version" content="__K1_VERSION__">
   <title>K1 验收台</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
   <script src="/appearance.js"></script>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
@@ -81,7 +82,7 @@
             <p id="preparationNote" class="field-note">指定测试服的 Unity 实测中，由 AI 执行节点配置的准备动作。</p>
           </fieldset>
           <div class="field"><label for="notes">验收要求（选填）</label><textarea id="notes" name="notes" maxlength="4000"></textarea></div>
-          <p class="field-note">填写测试服 ID 后，仅配置了该测试服的 Unity 自动实测节点可以接单。</p>
+          <p class="field-note">Unity 验收留空时，由 AI 从节点已启用的测试服中选服。填写后使用指定服。</p>
           <p id="submitStatus" class="field-note submit-status" role="status" hidden></p>
           <button class="primary" type="submit">提交验收批次</button>
         </form>
@@ -201,6 +202,7 @@
         <div id="progressReport">
           <div class="title-line"><h2 id="progressTitle">运行进度</h2><span id="progressCount" class="sub mono"></span></div>
           <p class="sub" id="stage"></p>
+          <p class="sub" id="serverSelection" hidden></p>
           <div class="field"><div class="track" id="progress" role="progressbar" aria-labelledby="progressTitle"><span class="track-fill"></span></div><p id="summary" class="sub"></p></div>
         </div>
         <form id="closeReview" class="field" hidden>

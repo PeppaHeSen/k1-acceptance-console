@@ -20,6 +20,8 @@ python3 lan.py --bind <主机内网IP> --port 8443 --upstream-port 8082 \
 
 部署记录应包含实际 URL、运行目录、进程启动方式和日志位置。HTTPS 网页只填写操作员名称，首次使用时自动登记到运行目录的 `operators.sqlite3`，并建立浏览器会话。名称用于显示，供可信内网使用。浏览器和异机节点都访问同一个 HTTPS 地址。给访问者分发公用证书，私钥保存在主服务器。
 
+如已有自定义浏览器页签图标，升级主节点时把原部署目录的 `web/favicon.png` 复制到新版源目录的同一路径。
+
 ## 部署并登记执行节点
 
 1. 在目标 macOS 或 Windows 机器检出仓库，检查 Python、Git，以及所选测试方式需要的 Unity 或 ADB。在 Worker 的执行账号下运行 `codex login` 或配置 Claude Code 的登录态。网页的「AI 执行器」默认选择 Codex CLI，节点需要使用支持 `codex exec --ignore-user-config --ephemeral` 的版本。也可以按批次选择 Claude Code。节点配置和运行记录放在本机独立目录。
@@ -41,7 +43,7 @@ Worker 在节点检查中分别报告 Codex CLI 和 Claude Code 是否可用。�
 
 ## Unity 运行验收
 
-在有桌面登录会话的 Mac 或 Windows 节点上启用。首次部署加入 `--unity-runtime`。已有节点在本机 `node.json` 中设置 `"unity_runtime": true`，配置测试服后，在用户的桌面会话中重启 Worker。网页配置向导中的「Unity」表示 Editor 和工程可读，「Unity 自动实测」显示已配置的测试服。提交分支或版本日验收时，填写测试服 ID，队列只会分配给支持该测试服自动实测的节点。
+在有桌面登录会话的 Mac 或 Windows 节点上启用。首次部署加入 `--unity-runtime`。已有节点在本机 `node.json` 中设置 `"unity_runtime": true`，配置测试服后，在用户的桌面会话中重启 Worker。网页配置向导中的「Unity」表示 Editor 和工程可读，「Unity 自动实测」显示已配置的测试服。提交分支或版本日验收时，填写测试服 ID，队列只会分配给支持该测试服自动实测的节点。留空时，队列分配给支持自动选服且已登记候选服的节点，由 AI 按 FunctionReview 核对候选服并选择。
 
 Worker 使用节点已配置的客户端工程。自动验收接单时，若该工程已在 Unity 中打开，验收 Agent 直接连接它。执行记录会显示当前提交、目标提交及跟踪文件改动，现有编辑器在验收后保持打开。工程未打开时，Worker 记录当前分支和提交，还原 Git 跟踪文件，切到验收提交并启动 Unity。未跟踪文件保留。节点运行目录的 `node-state/runtime/<执行尝试>` 保存日志、`runtime.json` 和切换分支时用于恢复的 `workspace.json`。
 
@@ -63,7 +65,7 @@ Unity GM 直接走已登录的批次测试服。Agent 可用 `test_gm_help` 查 
 
 动作脚本从标准输入读取一条 JSON，包含 `batch`、`attempt`、`item`、`case`、`action`、`server`、`player`、`client`、`refs`、`function_review`、`parameters`、`project`、`acceptance_scope` 和 `operation`。批次准备可在无活跃用例时调用，此时 `item`、`case` 为空。脚本可复用该提交里的 FunctionReview GM 或 Jenkins 流程。同一次执行中，同动作、同参数会得到同一个 `operation`，脚本按它保存回执，重复调用时查询或复用已提交的动作。标准输出只返回 `{"status":"ready|pending|blocked","evidence":"可展示的回执摘要"}`。长时间的部署可先返回 `pending`，Agent 可以继续核对需求或执行独立用例，再查询同一动作。回执摘要会显示在网页，凭据、原始部署参数和敏感日志留在节点本地。Agent 收到 `ready` 后还要验证用例需要的业务前置。
 
-Worker 准备好工程和技能后启动验收 Agent。Agent 先准备所选环境，再调用 `start_unity` 启动 Unity，已有编辑器时直接接入。Agent 查看连接、导入及编译状态，期间可按 FunctionReview 登记用例，再按实际状态进入 Play、选择测试角色及执行清单。网页逐条显示进度，结论和截图保存在该批次运行目录。无法完成的用例保留原因。验收结束后 Worker 回传结果，并清理本轮启动的编辑器和本轮切换的工作树。省略测试服 ID 可提交基础链路联调。版本日批次按选定页签收集验收事项。
+Worker 准备好工程和技能后启动验收 Agent。Agent 按需准备环境，并调用 `start_unity` 启动 Unity，已有编辑器时直接接入。自动选服时可先进入 Play 核对候选服的在线状态和角色，再结合目标功能需要的服务端与配表做出选择。实际使用的服号和选服依据显示在批次详情中。没有合适的候选服时，AI 记录每个候选的检查结果和具体原因。Agent 按 FunctionReview 登记并执行用例，网页逐条显示进度，结论和截图保存在该批次运行目录。验收结束后 Worker 回传结果，并清理本轮启动的编辑器和本轮切换的工作树。版本日批次按选定页签收集验收事项。
 
 屏幕适配用例在 Unity Game 窗口逐个应用目标分辨率并核对实际画面，Worker 在退出前恢复原尺寸。语言用例通过游戏内设置切换，客户端重启后接续同一测试角色，结束时恢复原语言。需要英雄或战力时，Agent 可以在指定的测试角色上通过正常玩法获得英雄、领取免费奖励和使用已有普通资源升级。英雄获得和升级可能保留在测试角色上。正式业务源码、数据表和线上热更属于独立流程。
 

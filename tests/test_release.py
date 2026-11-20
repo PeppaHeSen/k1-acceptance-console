@@ -21,9 +21,9 @@ class ReleaseFlowTest(unittest.TestCase):
             node_id = enrollment["id"]
             node = console.agent(node_id,enrollment["token"])
             console.configure_node(node_id,{"root":"C:/QA"})
-            heartbeat = {"root":"C:/QA","os":"Windows","capabilities":["Unity"],"checks":[],"revision":"0"*64}
+            heartbeat = {"root":"C:/QA","os":"Windows","capabilities":["真机"],"checks":[],"revision":"0"*64}
             self.assertIsNone(console.heartbeat(node,heartbeat)["update"])
-            request = {"mode":"branch","branch":"dev_NK-9705","source":"NK-9705","method":"Unity",
+            request = {"mode":"branch","branch":"dev_NK-9705","source":"NK-9705","method":"真机",
                        "node":node_id,"request":"sample-branch-job-0001"}
             job_id = console.submit(request)["id"]
             response = console.claim(node)

@@ -424,6 +424,30 @@ class AcceptanceCheckoutTest(unittest.TestCase):
             self.assertEqual(info["frames"], [{"frame": 2, "ms": 80}, {"frame": 3, "ms": 130}])
             self.assertEqual(images, [b"\x02", b"\x03"])
 
+    def test_auto_server_uses_online_candidate_and_preserves_unavailable_reason(self):
+        with TemporaryDirectory() as temp:
+            manifest = Path(temp) / "runtime.json"
+            save_json(manifest, {"server": "", "project": temp, "server_candidates": ["2903", "3020"],
+                                 "acceptance_scope": {"server": ""}})
+            tools = UnityTools(manifest)
+            self.assertEqual(tools.environment_options()["test_server_candidates"], [2903, 3020])
+            with self.assertRaisesRegex(ValueError, "选定"):
+                tools.select_test_role({"server": 2903, "player": 1})
+            with self.assertRaisesRegex(ValueError, "候选"):
+                tools.choose_test_server({"server": 9999, "reason": "未登记"})
+            tools.available_test_roles = Mock(return_value={"roles_ready": True, "server_listed": True, "server_online": False})
+            with self.assertRaisesRegex(ValueError, "2903 服.*离线"):
+                tools.choose_test_server({"server": 2903, "reason": "尝试"})
+            tools.choose_test_server({"reason": "2903 离线，3020 尚未上线"})
+            self.assertEqual(UnityTools(manifest).selection["reason"], "2903 离线，3020 尚未上线")
+            tools.available_test_roles.return_value["server_online"] = True
+            tools.choose_test_server({"server": 3020, "reason": "在线且可用"})
+            tools.lock_test_server()
+            resumed = UnityTools(manifest)
+            self.assertEqual(resumed.target_server(), 3020)
+            with self.assertRaisesRegex(ValueError, "不能切换"):
+                resumed.choose_test_server({"server": 2903, "reason": "切换"})
+
     def test_agent_can_switch_from_cached_role_to_discovered_role_on_target_server(self):
         with TemporaryDirectory() as temp:
             manifest = Path(temp) / "runtime.json"

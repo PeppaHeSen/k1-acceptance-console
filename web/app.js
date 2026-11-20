@@ -182,6 +182,13 @@ function modeSummary(config) {
     : `分支验收 · ${config.branch} · ${config.source}`;
 }
 
+function serverText(config) {
+  if (config.resolved_server) return `${config.resolved_server} 服 · 自动选服`;
+  if (config.server) return `${config.server} 服`;
+  if (config.auto_server) return config.server_selection_reason ? "未选到测试服" : "自动选服";
+  return "";
+}
+
 const runnerNames = {codex:"Codex CLI", codex_app:"Codex App", claude:"Claude Code"};
 
 function choices(select, options, placeholder) {
@@ -338,13 +345,13 @@ function renderFilteredQueue() {
       ["running","review","disconnected"].includes(job.state) : job.state===queueFilter);
     if (!matchesFilter || !terms.length) return matchesFilter;
     const fields = [job.id,job.operator,job.config.branch,job.config.source,job.config.sheet_name,
-      job.config.server,job.config.method,runnerNames[job.config.runner || "claude"],nodeName(job.node || job.assigned),stateNames[job.state],
+      serverText(job.config),job.config.method,runnerNames[job.config.runner || "claude"],nodeName(job.node || job.assigned),stateNames[job.state],
       job.stage,job.state==="running" ? "验收中" : "",job.config.mode==="version" ? "版本日验收" : "分支验收",
       ...job.items.flatMap(item=>[item.key,item.title,resultNames[item.result]])].map(normalize);
     return terms.every(term=>fields.some(field=>field.includes(term)));
   });
   const snapshot = JSON.stringify(jobs.map(job=>[job.id,job.state,job.config.branch,job.config.source,
-    job.config.sheet_name,job.config.method,job.config.runner,job.config.server,nodeName(job.node || job.assigned),job.operator,
+    job.config.sheet_name,job.config.method,job.config.runner,serverText(job.config),nodeName(job.node || job.assigned),job.operator,
     job.started,job.ended,job.waiting || job.stage,job.stop_requested,canStop(job),completion(job),
     job.items.map(item=>item.result)]));
   if (snapshot!==queueSnapshot) {
@@ -399,7 +406,7 @@ function renderQueue(jobs) {
     title.className = "job-title";
     title.textContent = job.config.mode==="branch" ? `#${job.id} · ${job.config.source}` : `#${job.id} · ${job.config.sheet_name} 版本日验收`;
     const detail = document.createElement("small");
-    detail.textContent = [job.config.branch,job.config.method,runnerNames[job.config.runner || "claude"],job.config.server && job.config.server+" 服",
+    detail.textContent = [job.config.branch,job.config.method,runnerNames[job.config.runner || "claude"],serverText(job.config),
       nodeName(job.node || job.assigned)].filter(Boolean).join(" · ");
     group.append(title, detail);
     const phase = document.createElement("div");
@@ -689,7 +696,7 @@ async function refreshJob(id, generation) {
     if (generation !== detailGeneration) return;
     set("detailTitle",`验收批次 #${job.id}`);
     set("context",[modeSummary(job.config),runnerNames[job.config.runner || "claude"],job.node_name || "等待节点",
-      job.config.server ? job.config.server + " 服" : "", "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
+      serverText(job.config), "操作人 " + (job.operator || "未记录")].filter(Boolean).join(" · "));
     byId("state").replaceChildren(jobStatus(job));
     const stop = byId("detailStop");
     stop.hidden = !canStop(job);
@@ -699,6 +706,9 @@ async function refreshJob(id, generation) {
       stop.replaceChildren(stopJobAction(job,"强制停止"));
     }
     set("stage",job.state==="running" && job.stop_requested ? "正在停止，等待节点清理。" : job.stage || "等待节点接单");
+    const reason = job.config.server_selection_reason;
+    byId("serverSelection").hidden = !reason;
+    set("serverSelection", reason ? `选服依据：${reason}` : "");
     byId("closeReview").hidden = job.state !== "review";
     const nextReport = reportMode(job);
     if (nextReport !== detailReport && job.state === "running") setLogExpanded(true);
@@ -795,7 +805,7 @@ function renderRoute(navigating = false) {
     logs.add(event.lastEventId);
     const data = JSON.parse(event.data);
     const payload = JSON.parse(data.payload);
-    if (live && ["execution_finished","case_snapshot"].includes(data.kind)) {
+    if (live && ["execution_finished","case_snapshot","test_server_selection"].includes(data.kind)) {
       refreshJob(id,generation);
     }
     if (data.kind === "codex_session" || data.kind === "case_snapshot") return;
@@ -821,7 +831,8 @@ function renderRoute(navigating = false) {
     const kind = document.createElement("span");
     kind.textContent = isAI ? "AI" : "节点";
     const content = document.createElement("p");
-    content.textContent = payload.text || payload.conclusion || (data.kind === "execution_started"
+    const selection = data.kind === "test_server_selection" && `${payload.server ? `AI 已选定 ${payload.server} 服` : "未找到可用测试服"} · ${payload.reason}`;
+    content.textContent = payload.text || payload.conclusion || selection || (data.kind === "execution_started"
       ? payload.runtime
         ? `Unity 工程 ${payload.root}\n客户端提交 ${payload.versions.client.target}\n验收交接文件 ${payload.runtime.manifest}`
         : "技能版本 " + payload.skill_version + "\n" + JSON.stringify(payload.versions,null,2)
